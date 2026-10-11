@@ -58,9 +58,10 @@ use crate::server::{http, read_capped, USER_AGENT};
 ///   host rather than on the CDN.
 /// * `api.radie.app`, `vanillarec.net`, `cdn.recroomarchive.org` — the
 ///   remaining hosts either API answers with.
-/// * `api.stellaonline.org` — Stella's `/img/<name>?width=`, built by
+/// * `img.stellaonline.org` — Stella's `/img/<name>?width=`, built by
 ///   `stella_api::img_url`. Served openly (no User-Agent or token), so the
-///   proxy fetches it like any other.
+///   proxy fetches it like any other. `api.stellaonline.org` served them
+///   until Stella moved them (by 2026-10-11).
 const ALLOWED_HOSTS: &[&str] = &[
     "api.vanillarec.net",
     "vanillarec.net",
@@ -70,6 +71,7 @@ const ALLOWED_HOSTS: &[&str] = &[
     "radie.app",
     "cdn.recroomarchive.org",
     "api.stellaonline.org",
+    "img.stellaonline.org",
 ];
 
 /// Widest thumbnail anyone may ask for.

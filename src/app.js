@@ -196,7 +196,7 @@ const NETWORKS = {
     logo: 'assets/stella-logo.png',
     site: 'https://discord.com/invite/stella-rr',
     downloadPage: 'https://discord.com/invite/stella-rr',
-    // Stella serves images openly at api.stellaonline.org/img/<name>; the
+    // Stella serves images openly at img.stellaonline.org/img/<name>; the
     // backend attaches absolute ThumbUrl/AvatarUrl, so no imageBase is needed.
     imageBase: '',
     // Stella's game API (rooms, people, profiles) is reached by signing in with

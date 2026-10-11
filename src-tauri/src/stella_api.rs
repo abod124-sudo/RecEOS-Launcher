@@ -44,19 +44,20 @@ use crate::server::{http_client_besthttp, read_capped, MAX_API_BYTES};
 /// Stella's name server: the API root answers with each service's base URL, as
 /// it does for the game (`{"Auth":"https://auth.stellaonline.org/auth", …}`).
 const NAME_SERVER: &str = "https://api.stellaonline.org/";
-const IMG_BASE: &str = "https://api.stellaonline.org/img";
 
 /// The name-server key for each first path segment used here, and where it
 /// pointed when last measured (2026-10-05) — used until the name server
 /// answers. Stella moved auth, accounts, rooms and matchmaking off
 /// `api.stellaonline.org` that day, and the notification hub later the same
-/// day; the old paths there are 404s.
+/// day; the old paths there are 404s. Images moved to `img.stellaonline.org`
+/// by 2026-10-11, and `api.stellaonline.org/img` is a 404 too.
 const SERVICES: &[(&str, &str, &str)] = &[
     ("auth", "Auth", "https://auth.stellaonline.org/auth"),
     ("notify", "Notifications", "https://notify.stellaonline.org/notify"),
     ("account", "Accounts", "https://accounts.stellaonline.org/"),
     ("roomserver", "Rooms", "https://rooms.stellaonline.org/roomserver"),
     ("match", "Matchmaking", "https://match.stellaonline.org/match"),
+    ("img", "Images", "https://img.stellaonline.org/img"),
     ("api", "API", "https://api.stellaonline.org/"),
 ];
 
@@ -1548,14 +1549,22 @@ pub async fn my_account_id() -> Result<i64, String> {
 // ─── Reshaping ──────────────────────────────────────────────────────────────
 
 /// Absolute image URL for a Rec Room `ImageName`, at `width` px. Stella serves
-/// these openly (no User-Agent or token needed), so the webview loads them
-/// straight from this URL.
+/// these openly (no User-Agent or token needed). The base is the name server's
+/// `Images`, as last fetched — rows are reshaped after an API call, which has
+/// fetched it by then — or the built-in one before that.
 fn img_url(name: &str, width: u32) -> String {
     let name = name.trim();
     if name.is_empty() || name == "DefaultProfileImage" {
         return String::new();
     }
-    format!("{IMG_BASE}/{name}?width={width}")
+    let cached = SERVICE_URLS
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().and_then(|(map, _)| map.get("Images").cloned()));
+    let base = cached.unwrap_or_else(|| {
+        SERVICES.iter().find(|(_, k, _)| *k == "Images").map(|(_, _, f)| f.to_string()).unwrap_or_default()
+    });
+    format!("{}/{name}?width={width}", base.trim_end_matches('/'))
 }
 
 fn i64_at(v: &Value, key: &str) -> i64 {
@@ -3119,7 +3128,7 @@ mod tests {
         assert_eq!(row["type"], 6);
         assert_eq!(row["senderName"], "Fangame300");
         assert_eq!(row["senderDisplay"], Value::Null);
-        assert_eq!(row["senderAvatar"], "https://api.stellaonline.org/img/pic?width=256");
+        assert_eq!(row["senderAvatar"], "https://img.stellaonline.org/img/pic?width=256");
         assert_eq!(row["message"], "Fangame300's Dorm");
         // A new friend: no text, and an unknown sender has no name.
         let friend = json!({ "Id": 2, "FromPlayerId": 519, "Data": "0", "Type": 40, "RoomId": 0,
@@ -3328,7 +3337,7 @@ mod tests {
         assert_eq!(row["Description"], "");
         assert_eq!(row["Downloads"], 52);
         assert_eq!(row["Certified"], false);
-        assert_eq!(row["ThumbUrl"], "https://api.stellaonline.org/img/InventionThumbnail-2702-x?width=1024");
+        assert_eq!(row["ThumbUrl"], "https://img.stellaonline.org/img/InventionThumbnail-2702-x?width=1024");
         let described = invention_row(&json!({ "Description": "  it shoots things " }));
         assert_eq!(described["Description"], "it shoots things");
     }
@@ -3351,7 +3360,7 @@ mod tests {
         assert_eq!(people.len(), 1);
         assert_eq!(people[0]["id"], 66620);
         assert_eq!(people[0]["userName"], "TopazRaptor1251");
-        assert_eq!(people[0]["AvatarUrl"], "https://api.stellaonline.org/img/ProfileThumbnail-66620-x?width=128");
+        assert_eq!(people[0]["AvatarUrl"], "https://img.stellaonline.org/img/ProfileThumbnail-66620-x?width=128");
         assert!(mutual_friends_of(&json!({ "error": "x" })).is_empty());
 
         let rep = json!({ "CheerGeneral": 429, "CheerHelpful": 79, "CheerCreative": 107, "CheerGreatHost": 104, "CheerSportsman": 103 });
@@ -3365,7 +3374,7 @@ mod tests {
     fn img_url_handles_empty_and_default() {
         assert_eq!(img_url("", 512), "");
         assert_eq!(img_url("DefaultProfileImage", 256), "");
-        assert_eq!(img_url("RoomThumbnail-reccenter", 512), "https://api.stellaonline.org/img/RoomThumbnail-reccenter?width=512");
+        assert_eq!(img_url("RoomThumbnail-reccenter", 512), "https://img.stellaonline.org/img/RoomThumbnail-reccenter?width=512");
     }
 
     #[test]
@@ -3380,7 +3389,7 @@ mod tests {
         assert_eq!(out["CheerCount"], 313);
         assert_eq!(out["VisitCount"], 491859);
         assert_eq!(out["ActivePlayerCount"], 4);
-        assert_eq!(out["ThumbUrl"], "https://api.stellaonline.org/img/RoomThumbnail-reccenter?width=512");
+        assert_eq!(out["ThumbUrl"], "https://img.stellaonline.org/img/RoomThumbnail-reccenter?width=512");
         assert_eq!(out["CreatorUsername"], "Unknown");
     }
 
@@ -3390,7 +3399,7 @@ mod tests {
         let out = person_row(&p);
         assert_eq!(out["id"], 70541);
         assert_eq!(out["userName"], "abod124");
-        assert_eq!(out["AvatarUrl"], "https://api.stellaonline.org/img/ProfileThumbnail-70541-x?width=256");
+        assert_eq!(out["AvatarUrl"], "https://img.stellaonline.org/img/ProfileThumbnail-70541-x?width=256");
         assert!(out["isOnline"].is_null());
     }
 
