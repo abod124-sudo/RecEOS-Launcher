@@ -4,7 +4,12 @@ use std::process::Command;
 
 
 const GITHUB_OWNER: &str = "abod124-sudo";
-const GITHUB_REPO: &str = "Radium-Launcher";
+/// Renamed from Radium-Launcher for 4.0.0. A repository under the old name is
+/// kept as a bridge: it holds the 4.0.0 release, because every version before
+/// it looks only there and refuses installers from any other repository (a
+/// renamed repository's API answer names its assets under the new name). Once
+/// on 4.0.0, a launcher checks here.
+const GITHUB_REPO: &str = "RecEOS-Launcher";
 
 /// Check GitHub for a newer release of the launcher.
 ///
@@ -518,16 +523,16 @@ mod release_url_tests {
     #[test]
     fn a_real_release_asset_is_accepted() {
         assert!(is_official_release_asset(
-            "https://github.com/abod124-sudo/Radium-Launcher/releases/download/v4.0.0/Radium.Launcher_4.0.0_x64-setup.exe"
+            "https://github.com/abod124-sudo/RecEOS-Launcher/releases/download/v4.0.0/Rec.EOS.Launcher_4.0.0_x64-setup.exe"
         ));
     }
 
     #[test]
     fn dot_segments_cannot_walk_into_another_repo() {
         for url in [
-            "https://github.com/abod124-sudo/Radium-Launcher/releases/download/../../../../evil/repo/releases/download/v1/setup.exe",
-            "https://github.com/abod124-sudo/Radium-Launcher/releases/download/%2e%2e/%2e%2e/%2e%2e/%2e%2e/evil/repo/releases/download/v1/setup.exe",
-            "https://github.com/abod124-sudo/Radium-Launcher/releases/download/v1/../../../../../evil/x/releases/download/v1/setup.exe",
+            "https://github.com/abod124-sudo/RecEOS-Launcher/releases/download/../../../../evil/repo/releases/download/v1/setup.exe",
+            "https://github.com/abod124-sudo/RecEOS-Launcher/releases/download/%2e%2e/%2e%2e/%2e%2e/%2e%2e/evil/repo/releases/download/v1/setup.exe",
+            "https://github.com/abod124-sudo/RecEOS-Launcher/releases/download/v1/../../../../../evil/x/releases/download/v1/setup.exe",
         ] {
             assert!(!is_official_release_asset(url), "{url} should be refused");
         }
@@ -536,13 +541,15 @@ mod release_url_tests {
     #[test]
     fn anything_but_the_repo_on_github_is_refused() {
         for url in [
-            "http://github.com/abod124-sudo/Radium-Launcher/releases/download/v1/setup.exe",
-            "https://github.com.evil.example/abod124-sudo/Radium-Launcher/releases/download/v1/setup.exe",
-            "https://evil.example@github.com/abod124-sudo/Radium-Launcher/releases/download/v1/setup.exe",
-            "https://github.com:8443/abod124-sudo/Radium-Launcher/releases/download/v1/setup.exe",
-            "https://github.com/someone/Radium-Launcher/releases/download/v1/setup.exe",
-            "https://github.com/abod124-sudo/Radium-Launcher/releases/download/v1/",
-            "https://github.com/abod124-sudo/Radium-Launcher/archive/v1.zip",
+            "http://github.com/abod124-sudo/RecEOS-Launcher/releases/download/v1/setup.exe",
+            "https://github.com.evil.example/abod124-sudo/RecEOS-Launcher/releases/download/v1/setup.exe",
+            "https://evil.example@github.com/abod124-sudo/RecEOS-Launcher/releases/download/v1/setup.exe",
+            "https://github.com:8443/abod124-sudo/RecEOS-Launcher/releases/download/v1/setup.exe",
+            "https://github.com/someone/RecEOS-Launcher/releases/download/v1/setup.exe",
+            "https://github.com/abod124-sudo/RecEOS-Launcher/releases/download/v1/",
+            "https://github.com/abod124-sudo/RecEOS-Launcher/archive/v1.zip",
+            // The bridge repository under the old name is for older versions only.
+            "https://github.com/abod124-sudo/Radium-Launcher/releases/download/v4.0.0/setup.exe",
             "not a url",
         ] {
             assert!(!is_official_release_asset(url), "{url} should be refused");

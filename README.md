@@ -71,7 +71,7 @@ An **unofficial** launcher for Rec Room revival servers.
 ## Download
 
 **Update 4.0.0 (Rec EOS Launcher) is coming soon.** Until it's published, grab the
-current build from the [Releases page](https://github.com/abod124-sudo/Radium-Launcher/releases/latest).
+current build from the [Releases page](https://github.com/abod124-sudo/RecEOS-Launcher/releases/latest).
 It's an installer for Windows x64.
 
 Already on Radium Launcher? 4.0.0 installs over it and keeps your settings and game
