@@ -147,7 +147,7 @@ fn tray_menu_window(app: &AppHandle) -> Option<tauri::WebviewWindow> {
         return Some(win);
     }
     let win = tauri::WebviewWindowBuilder::new(app, TRAY_MENU_LABEL, tauri::WebviewUrl::App("traymenu.html".into()))
-        .title("Radium Launcher")
+        .title("Rec EOS Launcher")
         .inner_size(320.0, 480.0)
         // Stays hidden until `tray_menu_show` places it. The pop-up next door
         // is built "visible" far off screen so its webview composites; that
@@ -531,7 +531,7 @@ fn on_menu(app: &AppHandle, id: &str) {
 
 pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     let mut tray = TrayIconBuilder::with_id("main-tray")
-        .tooltip("Radium Launcher")
+        .tooltip("Rec EOS Launcher")
         .on_tray_icon_event(|tray, event| match event {
             TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } => {
                 show_main(tray.app_handle());

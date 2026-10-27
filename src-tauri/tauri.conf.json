@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Radium Launcher",
+  "productName": "Rec EOS Launcher",
   "version": "4.0.0",
   "identifier": "com.radium.launcher",
   "build": {
@@ -12,7 +12,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Radium Launcher",
+        "title": "Rec EOS Launcher",
         "label": "main",
         "width": 1000,
         "height": 650,

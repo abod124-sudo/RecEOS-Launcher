@@ -181,6 +181,7 @@ pub async fn fetch_room_web_details(name: String, network: Option<String>) -> Va
     match Network::parse(network.as_deref()) {
         Network::Vanilla => return vanilla::room_web_details(&name).await,
         Network::Stella => return crate::server::no_public_api(),
+        Network::RecEos => return crate::receos_api::room_web_details(&name).await,
         Network::Radium => {}
     }
     let safe_name = vanilla::urlencoding(&name);
@@ -228,6 +229,7 @@ pub async fn fetch_user_web_details(
 ) -> Value {
     match Network::parse(network.as_deref()) {
         Network::Vanilla => return vanilla::user_web_details(&name).await,
+        Network::RecEos => return crate::receos_api::user_web_details(&name).await,
         // Stella looks a profile up by account id. The id usually comes from
         // the row the profile was opened from; without one, the name is
         // resolved to an account first.
@@ -345,7 +347,7 @@ pub async fn fetch_photo_web_details(photo_id: String, network: Option<String>) 
         Network::Vanilla => {
             return json!({ "success": false, "error": "Vanilla does not publish photo details." })
         }
-        Network::Stella => return crate::server::no_public_api(),
+        Network::Stella | Network::RecEos => return crate::server::no_public_api(),
         Network::Radium => {}
     }
     let safe_photo_id = vanilla::urlencoding(&photo_id);
@@ -375,7 +377,7 @@ pub async fn fetch_photo_comments(photo_id: String, network: Option<String>) -> 
         Network::Vanilla => {
             return json!({ "success": false, "error": "Vanilla does not publish photo comments." })
         }
-        Network::Stella => return crate::server::no_public_api(),
+        Network::Stella | Network::RecEos => return crate::server::no_public_api(),
         Network::Radium => {}
     }
     let urls = vec![

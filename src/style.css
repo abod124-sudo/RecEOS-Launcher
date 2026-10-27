@@ -709,7 +709,7 @@ img:is([src$="vanilla-logo.png"], [src$="stella-logo.png"]) { image-rendering: a
 /* The footer holds only the account row (Vanilla's or Stella's) now that the
    version badge is gone, so on Radium it would be an empty strip with a
    divider above it. */
-body:not(.network-vanilla):not(.network-stella) .sidebar-footer { display: none; }
+body:not(.network-vanilla):not(.network-stella):not(.network-receos) .sidebar-footer { display: none; }
 
 /* Account row: [avatar  name] [bell] */
 .account-slot { position: relative; }
@@ -980,7 +980,7 @@ button.notif-accept:disabled { opacity: 0.6; cursor: default; }
 .cheer-stat :is(.room-stat-val, .photo-detail-stat-value) {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
 }
-body:is(.network-vanilla, .network-stella) .cheer-stat :is(.room-stat-val, .photo-detail-stat-value) {
+body:is(.network-vanilla, .network-stella, .network-receos) .cheer-stat :is(.room-stat-val, .photo-detail-stat-value) {
   padding: 3px 10px;
   border-radius: 999px;
   background: color-mix(in srgb, var(--text) 7%, transparent);
@@ -991,9 +991,9 @@ body:is(.network-vanilla, .network-stella) .cheer-stat :is(.room-stat-val, .phot
   color: var(--text-muted);
   transition: transform 0.15s ease, color 0.15s ease;
 }
-body:not(.network-vanilla):not(.network-stella) .cheer-icon { display: none; }
+body:not(.network-vanilla):not(.network-stella):not(.network-receos) .cheer-icon { display: none; }
 /* The favorite star is Stella's alone: Vanilla's room page has no favorite. */
-body:not(.network-stella) .fav-icon { display: none; }
+body:not(.network-stella):not(.network-receos) .fav-icon { display: none; }
 /* The FAVORITES tile is a button so Stella can press it; everywhere else it
    must look exactly like the plain stat it used to be. */
 .stat-btn {
@@ -1462,6 +1462,23 @@ body.network-stella .home-hero-name {
   text-shadow: 0 2px 14px rgba(0, 0, 0, 0.45);
 }
 
+/* Rec EOS brand: its own banner art, rows of the mark in light blue on its
+   blue, with the mark in front in white and the name beside it. */
+body.network-receos .home-hero-art {
+  background: #2f87d8 url('assets/receos-pattern.jpg') center / cover no-repeat;
+}
+body.network-receos .home-hero-mark {
+  width: 88px; max-width: 30%; height: 88px;
+  background-color: #ffffff;
+  -webkit-mask: url('assets/receos-icon.png') center / contain no-repeat;
+  mask: url('assets/receos-icon.png') center / contain no-repeat;
+  filter: drop-shadow(0 6px 18px rgba(0, 0, 0, 0.35));
+}
+body.network-receos .home-hero-name {
+  color: #ffffff;
+  text-shadow: 0 2px 14px rgba(0, 0, 0, 0.35);
+}
+
 /* A banner picture of the user's own (Settings → Home), set per network by
    applyHomeBanner() and replayed before paint by boot.js. It can be any
    picture, so the brand turns white over a shade at the left rather than
@@ -1807,6 +1824,7 @@ body.network-radium.home-style-spotlight .home-hero-mark {
 }
 body.network-vanilla.home-style-spotlight .home-hero-mark { width: 104px; max-width: 40%; height: 112px; }
 body.network-stella.home-style-spotlight .home-hero-mark { width: 124px; max-width: 40%; height: 124px; }
+body.network-receos.home-style-spotlight .home-hero-mark { width: 124px; max-width: 40%; height: 124px; }
 body.home-style-spotlight .home-hero-name { max-width: 100%; font-size: 50px; text-align: center; }
 /* A picture of the user's own: the shade gathers behind the brand in the
    middle rather than down the left. */
@@ -1842,6 +1860,7 @@ body.home-style-compact .home-hero-brand {
 body.network-radium.home-style-compact .home-hero-mark { width: 220px; max-width: 100%; height: 44px; }
 body.network-vanilla.home-style-compact .home-hero-mark { width: 50px; max-width: 30%; height: 54px; }
 body.network-stella.home-style-compact .home-hero-mark { width: 62px; max-width: 30%; height: 62px; }
+body.network-receos.home-style-compact .home-hero-mark { width: 62px; max-width: 30%; height: 62px; }
 body.home-style-compact .home-hero-name { font-size: 26px; }
 /* The scrim runs in from the right edge, under the actions, instead of up
    from the bottom. */
@@ -2786,6 +2805,7 @@ body.animations-enabled.theme-moderndark .hero-gear[aria-expanded="false"]:hover
 }
 body.network-vanilla .hs-art { background-image: url('assets/vanilla-hero.png'); background-position: center top; }
 body.network-stella .hs-art { background-image: url('assets/stella-pattern.jpg'); }
+body.network-receos .hs-art { background-color: #2f87d8; background-image: url('assets/receos-pattern.jpg'); }
 body.has-home-banner .hs-art { background-image: var(--home-banner); background-position: center; }
 /* The network's mark, as the hero draws it. */
 .hs-mark {
@@ -2805,6 +2825,12 @@ body.network-stella .hs-mark {
   background: url('assets/stella-logo.png') center / contain no-repeat;
   -webkit-mask: none;
   mask: none;
+}
+body.network-receos .hs-mark {
+  width: 18%; height: 48%;
+  background: #ffffff;
+  -webkit-mask: url('assets/receos-icon.png') center / contain no-repeat;
+  mask: url('assets/receos-icon.png') center / contain no-repeat;
 }
 body.has-home-banner:not(.network-stella) .hs-mark { background-color: #ffffff; }
 /* PLAY, on its strip of scrim. */
@@ -4457,10 +4483,59 @@ body.theme-moderndark .feed-post-footer {
    per-network switches. */
 body:not(.network-vanilla) .network-only-vanilla { display: none !important; }
 /* A room's PLAY: Vanilla sends the running game there, Stella starts in it. */
-body:not(.network-vanilla):not(.network-stella) .room-play-net { display: none !important; }
+body:not(.network-vanilla):not(.network-stella):not(.network-receos) .room-play-net { display: none !important; }
 body:not(.network-stella) .network-only-stella { display: none !important; }
+body:not(.network-receos) .network-only-receos { display: none !important; }
+/* The friends list, its tab and its setting: Stella's and Rec EOS's. */
+body:not(.network-stella):not(.network-receos) .network-has-friends { display: none !important; }
+
+/* ── Rec EOS chats ──────────────────────────────────────────── */
+.nav-badge {
+  display: inline-block; min-width: 16px; padding: 0 5px; margin-left: 6px;
+  border-radius: 8px; font-size: 10px; line-height: 16px; text-align: center;
+  background: var(--err, #cf222e); color: #fff; vertical-align: middle;
+}
+.chats-layout {
+  display: grid; grid-template-columns: minmax(180px, 34%) 1fr; gap: 10px;
+  height: calc(100% - 52px); min-height: 0;
+}
+.chats-list { overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 2px; padding: 4px; }
+.chat-row {
+  display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px; text-align: left;
+  border: 0; border-radius: 6px; background: transparent; color: inherit; font: inherit; cursor: pointer;
+}
+.chat-row:hover { background: color-mix(in srgb, currentColor 8%, transparent); }
+.chat-row.is-open { background: var(--accent-soft, color-mix(in srgb, currentColor 12%, transparent)); }
+.chat-row img { width: 34px; height: 34px; border-radius: 7px; object-fit: cover; flex-shrink: 0; }
+.chat-row-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.chat-row-name { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-row-last { opacity: 0.7; font-size: 0.92em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-row.is-unread .chat-row-name::after { content: ''; display: inline-block; width: 8px; height: 8px; margin-left: 6px; border-radius: 50%; background: var(--accent, #2f87d8); vertical-align: middle; }
+.chats-view { display: flex; flex-direction: column; min-height: 0; padding: 0; overflow: hidden; }
+.chats-view-head { padding: 10px 12px; font-weight: 700; border-bottom: 1px solid var(--line, rgba(127,127,127,.25)); }
+.chats-view-head:empty { display: none; }
+.chats-messages { flex: 1; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+.chat-msg { max-width: 78%; align-self: flex-start; display: flex; flex-direction: column; gap: 2px; }
+.chat-msg.is-mine { align-self: flex-end; align-items: flex-end; }
+.chat-msg-bubble {
+  padding: 7px 10px; border-radius: 10px; white-space: pre-wrap; overflow-wrap: anywhere;
+  background: color-mix(in srgb, currentColor 9%, transparent);
+}
+.chat-msg.is-mine .chat-msg-bubble { background: var(--accent, #2f87d8); color: var(--on-accent, #fff); }
+.chat-msg.is-other-kind .chat-msg-bubble { font-style: italic; opacity: 0.75; }
+.chat-msg-meta { font-size: 0.82em; opacity: 0.6; }
+.chats-note { margin: auto; padding: 20px; text-align: center; opacity: 0.75; }
+.chats-friend-pick { display: flex; flex-direction: column; gap: 2px; padding: 8px; overflow-y: auto; }
+.chats-compose { display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--line, rgba(127,127,127,.25)); }
+.chats-compose[hidden] { display: none; }
+.chats-compose .cfg-input { flex: 1; min-width: 0; }
+.receos-login-body { display: flex; flex-direction: column; gap: 10px; min-width: 300px; }
+.receos-login-field { display: flex; flex-direction: column; gap: 4px; }
+.receos-login-note { margin: 0; opacity: 0.75; font-size: 0.92em; }
+.receos-login-error { margin: 0; color: var(--err, #cf222e); }
+.receos-login-error[hidden] { display: none; }
 /* The networks with accounts, and so notifications: Vanilla and Stella. */
-body:not(.network-vanilla):not(.network-stella) .network-only-accounts { display: none !important; }
+body:not(.network-vanilla):not(.network-stella):not(.network-receos) .network-only-accounts { display: none !important; }
 /* The sign-in offered in place of a Rooms/People list while signed out. */
 .stella-login-prompt { margin-top: 10px; padding: 5px 14px; font-size: 11px; }
 
@@ -4526,7 +4601,7 @@ body:not(.network-vanilla):not(.network-stella) .network-only-accounts { display
 .people-room-cell { max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 body.network-stella .people-bio-col { display: none; }
 /* People's Level column: the networks whose player rows carry a level. */
-body:not(.network-vanilla):not(.network-stella) .people-level-col { display: none !important; }
+body:not(.network-vanilla):not(.network-stella):not(.network-receos) .people-level-col { display: none !important; }
 /* The flex row is a wrapper INSIDE the <td>, not the <td> itself.
    display:flex on the <td> directly used to be what did this, and it broke
    the one thing every other cell in the row gets for free: a <td> is
@@ -5166,6 +5241,7 @@ body.animations-enabled .network-menu:not([hidden]) .network-option:nth-of-type(
 body.animations-enabled .network-menu:not([hidden]) .network-option:nth-of-type(2) { animation-delay: 0.09s; }
 /* One per network: an option without a delay runs first, out of order. */
 body.animations-enabled .network-menu:not([hidden]) .network-option:nth-of-type(3) { animation-delay: 0.14s; }
+body.animations-enabled .network-menu:not([hidden]) .network-option:nth-of-type(4) { animation-delay: 0.19s; }
 
 /* The exit, mirroring the drop. The options do not stagger back out — see the
    note on the manage menu's exit for why a close should not be made to wait. */

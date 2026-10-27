@@ -1,4 +1,4 @@
-; Radium Launcher NSIS template.
+; Rec EOS Launcher (formerly Radium Launcher) NSIS template.
 ;
 ; Tauri's own template (tauri-cli v2.11.2, crates/tauri-bundler/src/bundle/
 ; windows/nsis/installer.nsi) with the Radium changes below applied. Keep the
@@ -17,6 +17,9 @@
 ;      by itself.
 ;   4. The launcher starts after every install.
 ;   5. The old Electron build of the launcher is uninstalled first.
+;   6. INSTALLNAME, not PRODUCTNAME, names the install folder, the registry
+;      keys and the Run value, so the rename to "Rec EOS Launcher" updates
+;      old installs in place; shortcuts with the old name are removed.
 Unicode true
 ManifestDPIAware true
 ; Add in `dpiAwareness` `PerMonitorV2` to manifest for Windows 10 1607+ (note this should not affect lower versions since they should be able to ignore this and pick up `dpiAware` `true` set by `ManifestDPIAware true`)
@@ -52,6 +55,9 @@ ${StrLoc}
 
 !define MANUFACTURER "{{manufacturer}}"
 !define PRODUCTNAME "{{product_name}}"
+; Radium: the install folder, the registry keys and the Run value keep the
+; launcher's old name, so "Radium Launcher" installs update in place.
+!define INSTALLNAME "Radium Launcher"
 !define VERSION "{{version}}"
 !define VERSIONWITHBUILD "{{version_with_build}}"
 !define HOMEPAGE "{{homepage}}"
@@ -76,9 +82,9 @@ ${StrLoc}
 !define WEBVIEW2BOOTSTRAPPERPATH "{{webview2_bootstrapper_path}}"
 !define WEBVIEW2INSTALLERPATH "{{webview2_installer_path}}"
 !define MINIMUMWEBVIEW2VERSION "{{minimum_webview2_version}}"
-!define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCTNAME}"
+!define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INSTALLNAME}" ; Radium: INSTALLNAME
 !define MANUKEY "Software\${MANUFACTURER}"
-!define MANUPRODUCTKEY "${MANUKEY}\${PRODUCTNAME}"
+!define MANUPRODUCTKEY "${MANUKEY}\${INSTALLNAME}" ; Radium: INSTALLNAME
 !define UNINSTALLERSIGNCOMMAND "{{uninstaller_sign_cmd}}"
 !define ESTIMATEDSIZE "{{estimated_size}}"
 !define STARTMENUFOLDER "{{start_menu_folder}}"
@@ -97,7 +103,7 @@ OutFile "${OUTFILE}"
 ; We don't actually use this value as default install path,
 ; it's just for nsis to append the product name folder in the directory selector
 ; https://nsis.sourceforge.io/Reference/InstallDir
-!define PLACEHOLDER_INSTALL_DIR "placeholder\${PRODUCTNAME}"
+!define PLACEHOLDER_INSTALL_DIR "placeholder\${INSTALLNAME}" ; Radium: INSTALLNAME
 InstallDir "${PLACEHOLDER_INSTALL_DIR}"
 
 VIProductVersion "${VERSIONWITHBUILD}"
@@ -126,7 +132,7 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 
 !if "${INSTALLMODE}" == "both"
   !define MULTIUSER_MUI
-  !define MULTIUSER_INSTALLMODE_INSTDIR "${PRODUCTNAME}"
+  !define MULTIUSER_INSTALLMODE_INSTDIR "${INSTALLNAME}" ; Radium: INSTALLNAME
   !define MULTIUSER_INSTALLMODE_COMMANDLINE
   !if "${ARCH}" == "x64"
     !define MULTIUSER_USE_PROGRAMFILES64
@@ -522,17 +528,17 @@ Function .onInit
     !if "${INSTALLMODE}" == "perMachine"
       ${If} ${RunningX64}
         !if "${ARCH}" == "x64"
-          StrCpy $INSTDIR "$PROGRAMFILES64\${PRODUCTNAME}"
+          StrCpy $INSTDIR "$PROGRAMFILES64\${INSTALLNAME}" ; Radium: INSTALLNAME (all five)
         !else if "${ARCH}" == "arm64"
-          StrCpy $INSTDIR "$PROGRAMFILES64\${PRODUCTNAME}"
+          StrCpy $INSTDIR "$PROGRAMFILES64\${INSTALLNAME}"
         !else
-          StrCpy $INSTDIR "$PROGRAMFILES\${PRODUCTNAME}"
+          StrCpy $INSTDIR "$PROGRAMFILES\${INSTALLNAME}"
         !endif
       ${Else}
-        StrCpy $INSTDIR "$PROGRAMFILES\${PRODUCTNAME}"
+        StrCpy $INSTDIR "$PROGRAMFILES\${INSTALLNAME}"
       ${EndIf}
     !else if "${INSTALLMODE}" == "currentUser"
-      StrCpy $INSTDIR "$LOCALAPPDATA\${PRODUCTNAME}"
+      StrCpy $INSTDIR "$LOCALAPPDATA\${INSTALLNAME}"
     !endif
 
     Call RestorePreviousInstallLocation
@@ -671,6 +677,20 @@ Section Install
     DetailPrint "Uninstalling legacy Radium Launcher..."
     ExecWait '$R0 /S' $0
   ${EndIf}
+
+  ; Radium: the launcher was renamed. The desktop shortcut is always made
+  ; again under the new name, so the old one goes. An update does not make a
+  ; Start menu shortcut, so the old one is renamed instead.
+  !if "${INSTALLNAME}" != "${PRODUCTNAME}"
+    Delete "$DESKTOP\${INSTALLNAME}.lnk"
+    ${If} ${FileExists} "$SMPROGRAMS\${INSTALLNAME}.lnk"
+      ${If} ${FileExists} "$SMPROGRAMS\${PRODUCTNAME}.lnk"
+        Delete "$SMPROGRAMS\${INSTALLNAME}.lnk"
+      ${Else}
+        Rename "$SMPROGRAMS\${INSTALLNAME}.lnk" "$SMPROGRAMS\${PRODUCTNAME}.lnk"
+      ${EndIf}
+    ${EndIf}
+  !endif
 
   ; Copy main executable
   File "${MAINBINARYSRCPATH}"
@@ -880,7 +900,7 @@ Section Uninstall
   ; If it doesn't exist, it does nothing.
   ; We do this when not updating (to preserve the registry value on updates)
   ${If} $UpdateMode <> 1
-    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}"
+    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${INSTALLNAME}" ; Radium: background.rs RUN_VALUE_NAME
   ${EndIf}
 
   ; Delete app data if the checkbox is selected

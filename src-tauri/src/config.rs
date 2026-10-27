@@ -165,6 +165,7 @@ pub struct HomeBanners {
     pub radium: String,
     pub vanilla: String,
     pub stella: String,
+    pub receos: String,
 }
 
 impl HomeBanners {
@@ -173,6 +174,7 @@ impl HomeBanners {
             Network::Radium => &mut self.radium,
             Network::Vanilla => &mut self.vanilla,
             Network::Stella => &mut self.stella,
+            Network::RecEos => &mut self.receos,
         }
     }
 }
@@ -233,7 +235,12 @@ impl HomeSettings {
             self.style = HOME_STYLES[0].to_string();
         }
 
-        for banner in [&mut self.banners.radium, &mut self.banners.vanilla, &mut self.banners.stella] {
+        for banner in [
+            &mut self.banners.radium,
+            &mut self.banners.vanilla,
+            &mut self.banners.stella,
+            &mut self.banners.receos,
+        ] {
             if !is_safe_banner(banner) {
                 banner.clear();
             }
@@ -253,6 +260,8 @@ pub enum Network {
     Radium,
     Vanilla,
     Stella,
+    /// Rec EOS: the stock 20220211 client with the Rec EOS mod (`crate::receos`).
+    RecEos,
 }
 
 impl Network {
@@ -263,6 +272,7 @@ impl Network {
         match name.unwrap_or("") {
             "vanilla" => Network::Vanilla,
             "stella" => Network::Stella,
+            "receos" => Network::RecEos,
             _ => Network::Radium,
         }
     }
@@ -272,12 +282,13 @@ impl Network {
             Network::Radium => "radium",
             Network::Vanilla => "vanilla",
             Network::Stella => "stella",
+            Network::RecEos => "receos",
         }
     }
 
     /// Every network, Radium first. The order matters where one has to give
     /// way to another — see [`dedupe_install_dirs_at`].
-    pub const ALL: [Network; 3] = [Network::Radium, Network::Vanilla, Network::Stella];
+    pub const ALL: [Network; 4] = [Network::Radium, Network::Vanilla, Network::Stella, Network::RecEos];
 }
 
 /// Vanilla-specific install state.
@@ -332,7 +343,24 @@ pub struct StellaState {
     pub friends_view: String,
 }
 
-/// Application configuration for the Radium Launcher.
+/// Rec EOS-specific install state. The mod's own files are not tracked here:
+/// what is installed is read from the client folder (see `crate::receos`),
+/// since the mod also updates itself in-game.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[serde(default)]
+pub struct RecEosState {
+    pub install_dir: String,
+    pub game_exe_path: String,
+    pub client_version: String,
+    pub client_etag: String,
+    pub client_build: String,
+    pub defender_excluded: bool,
+    /// See [`Config::defender_dirs`].
+    pub defender_dirs: Vec<String>,
+}
+
+/// Application configuration for the launcher.
 ///
 /// Fields are serialized as camelCase to match the existing config.json format
 /// used by the Electron version of the launcher.
@@ -414,6 +442,8 @@ pub struct Config {
     pub vanilla: VanillaState,
     /// Install state for the Stella network.
     pub stella: StellaState,
+    /// Install state for the Rec EOS network.
+    pub receos: RecEosState,
 }
 
 impl Config {
@@ -454,6 +484,10 @@ impl Config {
         self.stella.client_etag = current.stella.client_etag.clone();
         self.stella.game_exe_path = current.stella.game_exe_path.clone();
         self.stella.patch_sha256 = current.stella.patch_sha256.clone();
+        self.receos.client_build = current.receos.client_build.clone();
+        self.receos.client_version = current.receos.client_version.clone();
+        self.receos.client_etag = current.receos.client_etag.clone();
+        self.receos.game_exe_path = current.receos.game_exe_path.clone();
         // The glass backdrop has its own command (`cmd_set_glass_backdrop`).
         // It can be a 1.4 MB data URI, so the frontend leaves it out of every
         // whole-config save rather than shipping it over IPC on each autosave;
@@ -480,6 +514,7 @@ impl Config {
             Network::Radium => &self.install_dir,
             Network::Vanilla => &self.vanilla.install_dir,
             Network::Stella => &self.stella.install_dir,
+            Network::RecEos => &self.receos.install_dir,
         }
     }
 
@@ -489,6 +524,7 @@ impl Config {
             Network::Radium => &mut self.install_dir,
             Network::Vanilla => &mut self.vanilla.install_dir,
             Network::Stella => &mut self.stella.install_dir,
+            Network::RecEos => &mut self.receos.install_dir,
         }
     }
 
@@ -498,6 +534,7 @@ impl Config {
             Network::Radium => self.defender_excluded,
             Network::Vanilla => self.vanilla.defender_excluded,
             Network::Stella => self.stella.defender_excluded,
+            Network::RecEos => self.receos.defender_excluded,
         }
     }
 
@@ -506,6 +543,7 @@ impl Config {
             Network::Radium => self.defender_excluded = value,
             Network::Vanilla => self.vanilla.defender_excluded = value,
             Network::Stella => self.stella.defender_excluded = value,
+            Network::RecEos => self.receos.defender_excluded = value,
         }
     }
 
@@ -516,6 +554,7 @@ impl Config {
             Network::Radium => &self.defender_dirs,
             Network::Vanilla => &self.vanilla.defender_dirs,
             Network::Stella => &self.stella.defender_dirs,
+            Network::RecEos => &self.receos.defender_dirs,
         }
     }
 
@@ -524,6 +563,7 @@ impl Config {
             Network::Radium => self.defender_dirs = dirs,
             Network::Vanilla => self.vanilla.defender_dirs = dirs,
             Network::Stella => self.stella.defender_dirs = dirs,
+            Network::RecEos => self.receos.defender_dirs = dirs,
         }
     }
 
@@ -576,6 +616,7 @@ impl Config {
             Network::Radium => &self.game_exe_path,
             Network::Vanilla => &self.vanilla.game_exe_path,
             Network::Stella => &self.stella.game_exe_path,
+            Network::RecEos => &self.receos.game_exe_path,
         }
     }
 
@@ -585,6 +626,7 @@ impl Config {
             Network::Radium => &self.client_build,
             Network::Vanilla => &self.vanilla.client_build,
             Network::Stella => &self.stella.client_build,
+            Network::RecEos => &self.receos.client_build,
         }
     }
 
@@ -594,6 +636,7 @@ impl Config {
             Network::Radium => &self.client_version,
             Network::Vanilla => &self.vanilla.client_version,
             Network::Stella => &self.stella.client_version,
+            Network::RecEos => &self.receos.client_version,
         }
     }
 
@@ -603,6 +646,7 @@ impl Config {
             Network::Radium => &self.client_etag,
             Network::Vanilla => &self.vanilla.client_etag,
             Network::Stella => &self.stella.client_etag,
+            Network::RecEos => &self.receos.client_etag,
         }
     }
 
@@ -635,6 +679,12 @@ impl Config {
                 self.stella.client_version = version;
                 self.stella.client_etag = etag;
             }
+            Network::RecEos => {
+                self.receos.game_exe_path = exe_path;
+                self.receos.client_build = build;
+                self.receos.client_version = version;
+                self.receos.client_etag = etag;
+            }
         }
     }
 
@@ -659,6 +709,12 @@ impl Config {
                 self.stella.client_version = String::new();
                 self.stella.client_etag = String::new();
                 self.stella.patch_sha256 = String::new();
+            }
+            Network::RecEos => {
+                self.receos.game_exe_path = String::new();
+                self.receos.client_build = String::new();
+                self.receos.client_version = String::new();
+                self.receos.client_etag = String::new();
             }
         }
     }
@@ -694,10 +750,13 @@ impl Default for Config {
             client_version: String::new(),
             client_etag: String::new(),
             client_version_sync_prompted: false,
-            network: "radium".to_string(),
+            // Rec EOS is the main network. A config saved before it existed
+            // names the network it was on, and stays there.
+            network: "receos".to_string(),
             orphaned_client_dir: String::new(),
             vanilla: VanillaState::default(),
             stella: StellaState::default(),
+            receos: RecEosState::default(),
         }
     }
 }
@@ -1505,6 +1564,7 @@ pub fn default_client_folder(network: Network) -> &'static str {
         Network::Radium => "client",
         Network::Vanilla => "client-vanilla",
         Network::Stella => "client-stella",
+        Network::RecEos => "client-receos",
     }
 }
 
@@ -1514,6 +1574,7 @@ pub fn network_subfolder(network: Network) -> &'static str {
         Network::Radium => "Radium",
         Network::Vanilla => "Vanilla",
         Network::Stella => "Stella",
+        Network::RecEos => "Rec EOS",
     }
 }
 

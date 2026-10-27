@@ -6,7 +6,7 @@
        browser enforces the intersection, so a source added to only one of them
        is still blocked — change them together. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self' ipc: http://ipc.localhost; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: radiumimg: http://radiumimg.localhost; connect-src 'self' ipc: http://ipc.localhost;" />
-  <title>Radium Launcher</title>
+  <title>Rec EOS Launcher</title>
   <!-- Inter ships with the launcher rather than being fetched from Google on
        every start. It used to be a render-blocking stylesheet request to
        fonts.googleapis.com ahead of first paint — in a desktop app that is
@@ -40,7 +40,7 @@
   <!-- Custom Title Bar -->
   <div class="titlebar" id="titlebar">
     <div class="titlebar-drag">
-      <span class="titlebar-app-name">RADIUM LAUNCHER</span>
+      <span class="titlebar-app-name">REC EOS LAUNCHER</span>
     </div>
     <div class="titlebar-controls">
       <button id="btnMinimize" class="tb-ctrl min" aria-label="Minimize">─</button>
@@ -64,15 +64,22 @@
              .sidebar-nav, so this never participates in it. -->
         <button class="nav-btn logo-combo" id="networkSwitcher" aria-haspopup="listbox"
                 aria-expanded="false" aria-controls="networkMenu">
-          <img src="logo.png" alt="" id="sidebarLogo" />
+          <img src="assets/receos-icon.png" alt="" id="sidebarLogo" />
           <div class="logo-wordmark">
-            <div class="wordmark-text" id="networkName">RADIUM</div>
+            <div class="wordmark-text" id="networkName">REC EOS</div>
           </div>
           <span class="logo-caret" aria-hidden="true">&#9662;</span>
         </button>
         <div class="network-menu" id="networkMenu" role="listbox"
              aria-label="Network" hidden>
-          <button class="nav-btn network-option" role="option" data-network="radium" aria-selected="true">
+          <button class="nav-btn network-option" role="option" data-network="receos" aria-selected="true">
+            <img class="network-option-icon" src="assets/receos-icon.png" alt="" />
+            <span class="network-option-text">
+              <span class="network-option-name">REC EOS</span>
+            </span>
+            <span class="network-option-check" aria-hidden="true">&#10003;</span>
+          </button>
+          <button class="nav-btn network-option" role="option" data-network="radium" aria-selected="false">
             <img class="network-option-icon" src="logo.png" alt="" />
             <span class="network-option-text">
               <span class="network-option-name">RADIUM</span>
@@ -114,13 +121,17 @@
         </button>
         <!-- Stella only, and only when Settings puts the friends list in a
              tab of its own (body.friends-view-tab) rather than on Home. -->
-        <button class="nav-btn network-only-stella" data-tab="friends" id="nav-friends">
+        <button class="nav-btn network-has-friends" data-tab="friends" id="nav-friends">
           FRIENDS
         </button>
         <!-- Vanilla only: it publishes a network-wide photo feed. Hidden on
              any network that doesn't, via body.network-* in the stylesheet. -->
         <button class="nav-btn network-only-vanilla" data-tab="feed" id="nav-feed">
           FEED
+        </button>
+        <!-- Rec EOS only: the player's chats, the game's own (receos_social.rs). -->
+        <button class="nav-btn network-only-receos" data-tab="chats" id="nav-chats">
+          CHATS <span class="nav-badge" id="chatsBadge" hidden></span>
         </button>
         <button class="nav-btn" data-tab="status" id="nav-status">
           LOGS
@@ -156,6 +167,32 @@
             </div>
             <button class="nav-btn network-option" role="menuitem" id="vanillaProfileBtn">MY PROFILE</button>
             <button class="nav-btn network-option" role="menuitem" id="vanillaLogoutBtn">LOG OUT</button>
+          </div>
+        </div>
+        <!-- Rec EOS account: the Rec EOS username and password (set with
+             /password in the Rec EOS Discord). The password goes to the
+             server once; the launcher keeps only the token it answers with. -->
+        <div class="account-slot network-only-receos">
+          <div class="account-row">
+            <button class="nav-btn account-btn" id="receosAccountBtn"
+                    aria-haspopup="menu" aria-expanded="false">
+              <img class="account-avatar" id="receosAccountAvatar" alt="" hidden />
+              <span class="account-name" id="receosAccountName">LOG IN</span>
+            </button>
+            <button class="nav-btn notif-bell" id="receosNotifsBtn" aria-label="Notifications"
+                    aria-haspopup="dialog" aria-expanded="false" hidden>
+              <span class="vn-icon vn-icon-bell" aria-hidden="true"></span>
+              <span class="notif-badge" id="receosNotifBadge" hidden></span>
+            </button>
+          </div>
+          <div class="network-menu account-menu" id="receosAccountMenu" role="menu"
+               aria-label="Rec EOS account" hidden>
+            <div class="account-meta">
+              <span class="account-meta-display" id="receosAccountDisplay" hidden></span>
+              <span class="account-meta-name" id="receosAccountFullName"></span>
+            </div>
+            <button class="nav-btn network-option" role="menuitem" id="receosProfileBtn">MY PROFILE</button>
+            <button class="nav-btn network-option" role="menuitem" id="receosLogoutBtn">LOG OUT</button>
           </div>
         </div>
         <!-- Stella account. Signed in with the player's Steam account (see
@@ -214,9 +251,10 @@
             <div class="home-hero-name" id="heroName" aria-hidden="true"></div>
           </div>
           <div class="home-hero-bar installed-only">
-            <!-- Stella's patch update, drawn like Steam's game UPDATE button so
-                 it reads as "this game has an update", never as a launcher
-                 update. Takes PLAY's place while body.stella-update-needed. -->
+            <!-- A game patch update (Stella's patch, the Rec EOS mod), drawn
+                 like Steam's game UPDATE button so it reads as "this game has
+                 an update", never as a launcher update. Takes PLAY's place
+                 while body.stella-update-needed. -->
             <div class="steam-update" id="stellaUpdate">
               <button class="btn-steam-update" id="btnStellaUpdate">
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46A7.93 7.93 0 0 0 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74A7.93 7.93 0 0 0 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
@@ -370,7 +408,7 @@
         <!-- Stella only: your friends, from Stella's live presence
              (stella_hub.rs). Online friends are cards with JOIN, everyone
              else a chip underneath; any of them opens their profile. -->
-        <section class="home-section home-friends network-only-stella" id="stellaFriendsCard">
+        <section class="home-section home-friends network-has-friends" id="stellaFriendsCard">
           <div class="home-section-head">
             <h3 class="home-section-title">Friends</h3>
             <span class="friends-summary" id="stellaFriendsCount"></span>
@@ -414,6 +452,26 @@
         <!-- Online and the rest, each a grid of cards (renderStellaFriendsInto). -->
         <div class="native-panel friends-tab-panel">
           <div class="friends-tab-list" id="stellaFriendsTabList"></div>
+        </div>
+      </section>
+
+      <!-- ───────── CHATS TAB (Rec EOS) ───────────────────── -->
+      <section class="tab-panel" id="tab-chats">
+        <div class="panel-header">
+          <h2>CHATS</h2>
+          <button class="btn-refresh" id="btnNewChat">+ New chat</button>
+        </div>
+        <div class="chats-layout">
+          <div class="native-panel chats-list" id="chatThreadList" role="list" aria-label="Chats"></div>
+          <div class="native-panel chats-view">
+            <div class="chats-view-head" id="chatTitle"></div>
+            <div class="chats-messages" id="chatMessages" aria-live="polite"></div>
+            <form class="chats-compose" id="chatForm" hidden>
+              <input type="text" id="chatInput" class="cfg-input" maxlength="1000" placeholder="Message..."
+                     aria-label="Message" autocomplete="off" />
+              <button type="submit" class="modal-btn modal-btn-primary" id="chatSend">SEND</button>
+            </form>
+          </div>
         </div>
       </section>
 
@@ -896,7 +954,7 @@
               <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.89 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/></svg>
               <span>Notifications</span>
             </button>
-            <button type="button" class="settings-nav-btn network-only-stella" role="tab" aria-selected="false" data-section="friends" id="setnav-friends" aria-controls="setpage-friends" tabindex="-1">
+            <button type="button" class="settings-nav-btn network-has-friends" role="tab" aria-selected="false" data-section="friends" id="setnav-friends" aria-controls="setpage-friends" tabindex="-1">
               <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
               <span>Friends</span>
             </button>
@@ -1170,6 +1228,18 @@
 
               <div class="settings-group">
                 <div class="folder-row">
+                  <img class="folder-logo" src="assets/receos-icon.png" alt="" />
+                  <span class="folder-text">
+                    <span class="sg-label">Rec EOS</span>
+                    <span class="folder-path" id="cfgInstallDirReceos">%APPDATA%\com.radium.launcher\client-receos</span>
+                  </span>
+                  <span class="folder-actions">
+                    <button type="button" class="btn-open-folder" data-change-folder="receos">Change</button>
+                    <button type="button" class="btn-open-folder" data-reset-folder="receos">Reset</button>
+                    <button type="button" class="btn-open-folder" data-open-folder="receos">Open</button>
+                  </span>
+                </div>
+                <div class="folder-row">
                   <img class="folder-logo" src="logo.png" alt="" />
                   <span class="folder-text">
                     <span class="sg-label">Radium</span>
@@ -1244,7 +1314,7 @@
             </div>
 
             <!-- ── Friends (Stella) ── -->
-            <div class="settings-page network-only-stella" id="setpage-friends" role="tabpanel" aria-labelledby="setnav-friends" hidden>
+            <div class="settings-page network-has-friends" id="setpage-friends" role="tabpanel" aria-labelledby="setnav-friends" hidden>
               <div class="settings-page-head">
                 <h3 class="settings-page-title">Friends</h3>
                 <p class="settings-page-desc">Your Stella friends, and where the launcher shows them.</p>
@@ -1275,9 +1345,9 @@
               </div>
 
               <div class="settings-group about-card">
-                <img class="about-logo" src="logo.png" alt="" />
+                <img class="about-logo" src="assets/receos-icon.png" alt="" />
                 <span class="about-text">
-                  <span class="about-name">Radium Launcher</span>
+                  <span class="about-name">Rec EOS Launcher</span>
                   <span class="about-version" id="aboutVersion"></span>
                 </span>
               </div>
@@ -1626,6 +1696,32 @@
       <div class="modal-footer">
         <button class="modal-btn modal-btn-secondary" id="stellaAccountsDone">Close</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Rec EOS sign-in. -->
+  <div class="modal-overlay" id="receosLoginModal" style="display:none">
+    <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="receosLoginTitle">
+      <div class="modal-titlebar">
+        <span class="modal-title" id="receosLoginTitle">SIGN IN TO REC EOS</span>
+        <button class="modal-close-btn" id="receosLoginClose" aria-label="Close">✕</button>
+      </div>
+      <form id="receosLoginForm" autocomplete="off">
+        <div class="modal-body receos-login-body">
+          <label class="receos-login-field"><span>Username</span>
+            <input type="text" id="receosLoginUser" class="cfg-input" autocomplete="off" spellcheck="false" maxlength="20" required />
+          </label>
+          <label class="receos-login-field"><span>Password</span>
+            <input type="password" id="receosLoginPass" class="cfg-input" autocomplete="off" maxlength="100" required />
+          </label>
+          <p class="receos-login-note">No password yet? Use <b>/password</b> in the Rec EOS Discord.</p>
+          <p class="receos-login-error" id="receosLoginError" role="alert" hidden></p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="modal-btn modal-btn-secondary" id="receosLoginCancel">Cancel</button>
+          <button type="submit" class="modal-btn modal-btn-primary" id="receosLoginSubmit">Sign in</button>
+        </div>
+      </form>
     </div>
   </div>
 

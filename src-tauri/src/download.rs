@@ -95,6 +95,7 @@ fn zip_stem(network: Network) -> &'static str {
         Network::Radium => "client.zip",
         Network::Vanilla => "client-vanilla.zip",
         Network::Stella => "client-stella.zip",
+        Network::RecEos => "client-receos.zip",
     }
 }
 
@@ -103,7 +104,17 @@ fn zip_stem(network: Network) -> &'static str {
 pub(crate) fn download_user_agent(network: Network) -> &'static str {
     match network {
         Network::Stella => crate::stella::USER_AGENT,
-        Network::Radium | Network::Vanilla => BROWSER_UA,
+        Network::Radium | Network::Vanilla | Network::RecEos => BROWSER_UA,
+    }
+}
+
+/// What a partial download is matched to when it is resumed: the URL it came
+/// from, or for Rec EOS its MediaFire page, whose download links change on
+/// every visit (the pinned hash still decides whether the result is kept).
+fn resume_key(network: Network, download_url: &str) -> String {
+    match network {
+        Network::RecEos => format!("receos:{}", crate::receos::CLIENT_PAGE),
+        _ => download_url.to_string(),
     }
 }
 
@@ -470,6 +481,12 @@ async fn resolve_download_info(
         // A fixed "latest" URL with no version published beside it.
         return Ok((String::new(), crate::stella::CLIENT_URL.to_string()));
     }
+    if network == Network::RecEos {
+        // MediaFire hands out a short-lived link from its file page, so it is
+        // looked up for every download. The zip is pinned by hash below.
+        let url = crate::receos::resolve_client_url().await?;
+        return Ok((crate::receos::CLIENT_VERSION.to_string(), url));
+    }
     if network == Network::Vanilla {
         // Vanilla has no published build yet — vanillarec.net lists every
         // platform as "coming soon" with dead download buttons — so the URL is
@@ -767,10 +784,11 @@ async fn download_client_impl(
     // file and its sidecar metadata survive launcher restarts, so this resumes a
     // download interrupted by a pause OR by closing the launcher entirely.
     let existing_meta = read_part_meta(&meta_path);
+    let resume_key = resume_key(network, &download_url);
     let mut resume_from: u64 = 0;
     if part_path.exists() {
         if let Some(m) = &existing_meta {
-            if m.url == download_url {
+            if m.url == resume_key {
                 resume_from = fs::metadata(&part_path).map(|md| md.len()).unwrap_or(0);
             }
         }
@@ -898,7 +916,7 @@ async fn download_client_impl(
     // Persist resume metadata up front, so even a hard close on the very next
     // chunk leaves enough behind to continue from.
     write_part_meta(&meta_path, &PartMeta {
-        url: download_url.clone(),
+        url: resume_key.clone(),
         etag: resolved_etag.clone().unwrap_or_default(),
         total,
         resumable,
@@ -1115,8 +1133,13 @@ async fn download_client_impl(
     // Verify the pin before anything is extracted or the old install is
     // touched. Only Radium has a build this launcher pins; a Vanilla zip comes
     // from a URL the user supplied, so there is nothing to compare it against.
-    if network == Network::Radium {
-        if let Some(expected) = EXPECTED_CLIENT_SHA256 {
+    let pinned = match network {
+        Network::Radium => EXPECTED_CLIENT_SHA256,
+        Network::RecEos => Some(crate::receos::CLIENT_SHA256),
+        _ => None,
+    };
+    {
+        if let Some(expected) = pinned {
             let _ = app.emit("download-progress", json!({
                 "phase": "extract",
                 "pct": 0,
@@ -1233,6 +1256,19 @@ async fn download_client_impl(
             "status": "Getting Stella's patch..."
         }));
         crate::stella::adopt_pinned_patch(&app).await.unwrap_or(false)
+    } else if network == Network::RecEos {
+        let _ = app.emit("download-progress", json!({
+            "phase": "extract",
+            "pct": 100,
+            "status": "Installing Rec EOS..."
+        }));
+        match crate::receos::update_patch(&app).await {
+            Ok(_) => true,
+            Err(e) => {
+                crate::applog::backend("warn", "Rec EOS", format!("The client is installed, but the Rec EOS mod isn't yet: {e}"));
+                false
+            }
+        }
     } else {
         false
     };
@@ -1782,6 +1818,7 @@ pub async fn select_folder(network: Option<String>) -> Result<Option<String>, St
         Network::Radium => "Select Radium Client Install Folder",
         Network::Vanilla => "Select Vanilla Client Install Folder",
         Network::Stella => "Select Stella Client Install Folder",
+        Network::RecEos => "Select Rec EOS Client Install Folder",
     };
     // The dialog blocks until the user answers, which can be minutes. On the
     // blocking pool, so it doesn't hold an async worker other commands and the
@@ -2006,6 +2043,23 @@ fn write_install_manifest(dir: &Path, entries: &[String]) -> std::io::Result<()>
     fs::write(dir.join(INSTALL_MANIFEST), text)
 }
 
+/// Add `names` (top-level entries something wrote into the client after the
+/// install, such as the Rec EOS mod's files) to the install's record, so an
+/// uninstall takes them too. An install with no record is left without one.
+pub(crate) fn add_install_entries(dir: &Path, names: &[String]) {
+    let Some(mut entries) = read_install_manifest(dir) else { return };
+    let mut changed = false;
+    for name in names.iter().filter(|n| is_plain_name(n)) {
+        if !entries.iter().any(|e| e.eq_ignore_ascii_case(name)) {
+            entries.push(name.clone());
+            changed = true;
+        }
+    }
+    if changed {
+        let _ = write_install_manifest(dir, &entries);
+    }
+}
+
 /// The recorded entries, or `None` for an install made before the manifest
 /// existed (or one whose manifest can't be read).
 fn read_install_manifest(dir: &Path) -> Option<Vec<String>> {
@@ -2142,6 +2196,37 @@ fn safe_clear_client_dir(client_dir: &str) -> std::io::Result<bool> {
     let _ = fs::remove_file(path.join(INCOMPLETE_MARKER));
 
     Ok(true)
+}
+
+/// The real Rec EOS base client through the install pipeline:
+/// `RECEOS_BASE_ZIP=<zip> cargo test --lib -- --ignored the_receos_base_zip`.
+#[cfg(test)]
+mod receos_base_zip_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "needs RECEOS_BASE_ZIP, a 3 GB file"]
+    fn the_receos_base_zip_installs() {
+        let zip = std::path::PathBuf::from(std::env::var("RECEOS_BASE_ZIP").expect("set RECEOS_BASE_ZIP"));
+        assert!(digest_matches(&sha256_file(&zip).unwrap(), crate::receos::CLIENT_SHA256), "the pinned hash");
+        let dir = std::env::temp_dir().join(format!("receos-base-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let dir_s = dir.to_string_lossy().to_string();
+        extract_client_zip(&zip, &dir_s, &mut |_| {}).unwrap();
+        let exe = crate::game::find_game_exe_for(Network::RecEos, &dir_s).expect("a game to launch");
+        assert_eq!(Path::new(&exe), dir.join("RecRoom.exe"));
+        for loader in ["version.dll", "doorstop_config.ini", "dotnet/coreclr.dll", "BepInEx/core/BepInEx.Unity.IL2CPP.dll", "UserData/RecEOS.json"] {
+            assert!(dir.join(loader).is_file(), "{loader}");
+        }
+        assert!(!crate::receos::mod_installed(&dir_s), "the mod comes from the update server, not the zip");
+        assert!(!dir.join("Recroom_Release.exe").exists());
+        let record = read_install_manifest(&dir).unwrap();
+        for name in ["UserLibs", "BepInEx", "UserData", "RecRoom.exe"] {
+            assert!(record.iter().any(|e| e == name), "{name} recorded");
+        }
+        println!("installed into {}", dir.display());
+    }
 }
 
 #[cfg(test)]

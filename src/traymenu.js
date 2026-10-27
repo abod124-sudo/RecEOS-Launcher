@@ -123,6 +123,7 @@
   }
 
   const NETWORKS = [
+    { id: 'receos', label: 'Rec EOS', logo: 'assets/receos-icon.png' },
     { id: 'radium', label: 'Radium', logo: 'logo.png' },
     { id: 'vanilla', label: 'Vanilla', logo: 'assets/vanilla-logo.png' },
     { id: 'stella', label: 'Stella', logo: 'assets/stella-logo.png' },
@@ -312,7 +313,7 @@
   function footer() {
     return h('div', { class: 'footer', 'data-key': 'footer' },
       h('button', { class: 'item item-open has-sys', type: 'button', 'data-id': 'open' },
-        icon('open'), sysIcon('open'), h('span', { class: 'item-label' }, 'Open Radium Launcher')),
+        icon('open'), sysIcon('open'), h('span', { class: 'item-label' }, 'Open Rec EOS Launcher')),
       // No set has a shut-down icon, so Quit keeps its line icon everywhere.
       h('button', { class: 'item item-quit', type: 'button', 'data-id': 'quit' }, icon('quit'), 'Quit'));
   }

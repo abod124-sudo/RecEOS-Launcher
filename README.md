@@ -1,4 +1,6 @@
-# Radium Launcher
+# Rec EOS Launcher
+
+_Formerly Radium Launcher._
 
 An **unofficial** launcher for Rec Room revival servers.
 

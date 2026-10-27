@@ -1,7 +1,7 @@
 {
   "name": "radium-launcher",
   "version": "4.0.0",
-  "description": "Radium — Custom Rec Room Private Server Launcher",
+  "description": "Rec EOS Launcher — Rec Room revival launcher",
   "private": true,
   "scripts": {
     "dev": "tauri dev",

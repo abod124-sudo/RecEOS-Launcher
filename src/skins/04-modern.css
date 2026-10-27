@@ -337,6 +337,7 @@ body:is(.theme-neondark, .theme-modernlight, .theme-moderngreen,
   & .network-menu:not([hidden]) .network-option:nth-of-type(2) { animation-delay: 0.09s; }
   /* One per network: an option without a delay runs first, out of order. */
   & .network-menu:not([hidden]) .network-option:nth-of-type(3) { animation-delay: 0.14s; }
+  & .network-menu:not([hidden]) .network-option:nth-of-type(4) { animation-delay: 0.19s; }
   & .network-menu.is-closing .network-option { animation: none; }
   & .network-menu .network-option-icon { width: 24px; height: 24px; }
   & .network-option-name { font-size: 14px; }

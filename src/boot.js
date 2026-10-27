@@ -55,7 +55,7 @@ try {
   document.body.classList.add('animations-enabled');
   // Network brand, applied before paint for the same reason as the skin.
   var savedNetwork = localStorage.getItem('radium-network');
-  var network = (savedNetwork === 'vanilla' || savedNetwork === 'stella') ? savedNetwork : 'radium';
+  var network = (savedNetwork === 'vanilla' || savedNetwork === 'stella' || savedNetwork === 'radium') ? savedNetwork : 'receos';
   document.body.classList.add('network-' + network);
   // That network's Home banner, when the user picked a picture for it.
   // Checked like the glass backdrop: a stored picture only, nothing that could

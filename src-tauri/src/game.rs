@@ -47,7 +47,11 @@ const STELLA_LAUNCH_TARGETS: [&str; 1] = ["RecRoom.exe"];
 /// [`find_game_exe`] for `network`'s client.
 pub fn find_game_exe_for(network: config::Network, dir: &str) -> Option<String> {
     match network {
-        config::Network::Stella => find_launch_target(Path::new(dir), &STELLA_LAUNCH_TARGETS, 0),
+        // Rec EOS likewise: Recroom_Release.exe is Easy Anti-Cheat, which
+        // refuses BepInEx.
+        config::Network::Stella | config::Network::RecEos => {
+            find_launch_target(Path::new(dir), &STELLA_LAUNCH_TARGETS, 0)
+        }
         _ => find_game_exe(dir),
     }
 }
@@ -473,9 +477,10 @@ fn launch_game_impl(
         // flat (Radium) field.
         config::Network::Vanilla => cfg.vanilla.game_exe_path.clone(),
         config::Network::Stella => cfg.stella.game_exe_path.clone(),
+        config::Network::RecEos => cfg.receos.game_exe_path.clone(),
     };
     // Stella only ever launches the game itself; see `STELLA_LAUNCH_TARGETS`.
-    let wrong_stella_exe = network == config::Network::Stella
+    let wrong_stella_exe = matches!(network, config::Network::Stella | config::Network::RecEos)
         && !Path::new(&exe_path)
             .file_name()
             .is_some_and(|f| f.eq_ignore_ascii_case(STELLA_LAUNCH_TARGETS[0]));
@@ -497,6 +502,10 @@ fn launch_game_impl(
             "Game executable not found in: {}\n\nPlease download the client first.",
             client_dir
         ));
+    }
+    // Without the mod the game would go looking for Rec Room's own servers.
+    if network == config::Network::RecEos && !crate::receos::mod_installed(&client_dir) {
+        return Err("Rec EOS isn't installed in this client yet. Press UPDATE on Home.".into());
     }
 
     let exe = Path::new(&exe_path);
@@ -524,7 +533,7 @@ fn launch_game_impl(
     let join_arg = config
         .get("joinPlayerId")
         .and_then(|v| v.as_i64())
-        .filter(|&id| id > 0 && network == config::Network::Stella)
+        .filter(|&id| id > 0 && matches!(network, config::Network::Stella | config::Network::RecEos))
         .map(|id| format!("+join:{id}"));
     // Likewise a room, by name: `+roomname:` sits beside `+join:` in the
     // game's own list of launch arguments. Only a plain room name is passed
@@ -533,7 +542,7 @@ fn launch_game_impl(
         .get("joinRoomName")
         .and_then(|v| v.as_str())
         .map(|n| n.trim().trim_start_matches('^'))
-        .filter(|n| network == config::Network::Stella && valid_room_name(n))
+        .filter(|n| matches!(network, config::Network::Stella | config::Network::RecEos) && valid_room_name(n))
         .map(|n| format!("+roomname:{n}"));
     // A friend in a private copy of a room can't be joined that way (Stella
     // answers "Room does not exist"); the game starts plainly instead, and once
@@ -556,6 +565,19 @@ fn launch_game_impl(
     };
     let child = if let Some(pid) = stella_pid {
         pid
+    } else if network == config::Network::RecEos {
+        // The game itself, with the mode and a room or player to start in.
+        let mut cmd = Command::new(exe);
+        cmd.arg(mode_arg);
+        if let Some(target) = join_arg.as_ref().or(room_arg.as_ref()) {
+            cmd.arg(target);
+        }
+        cmd.current_dir(&work_dir);
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(0x00000008); // DETACHED_PROCESS
+        cmd.spawn()
+            .map_err(|e| format!("Failed to launch game executable: {}", e))?
+            .id()
     } else if is_bat {
         spawn_bat(&exe_path, &work_dir)
             .map_err(|e| format!("Failed to launch batch file: {}", e))?

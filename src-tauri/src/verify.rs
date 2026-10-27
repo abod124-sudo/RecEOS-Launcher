@@ -139,6 +139,9 @@ fn is_user_state(path: &str) -> bool {
     lower.ends_with(".log")
         || lower.contains("bepinex/config/")
         || lower.contains("bepinex/cache/")
+        // Rec EOS's settings, caches and room pictures, which the mod and its
+        // in-game updater write.
+        || lower.starts_with("userdata/")
 }
 
 /// Every file in `archive`, with the size and CRC-32 its central directory

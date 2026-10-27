@@ -139,7 +139,7 @@ pub(crate) fn no_public_api() -> Value {
     json!({
         "success": false,
         "unsupported": true,
-        "error": "Stella does not publish this."
+        "error": "This network does not publish this."
     })
 }
 
@@ -154,6 +154,19 @@ pub async fn ping_server(url: String) -> Value {
     let is_cdn = host == "cdn.recroomarchive.org";
     let is_vanilla = host == "api.vanillarec.net" || host == "vanillarec.net";
     let is_stella = host == "api.stellaonline.org";
+    let is_receos = host == "api.rec-eos.com";
+    if is_receos {
+        let start = Instant::now();
+        return match crate::receos::web_status().await {
+            Ok(v) => json!({
+                "online": v["ok"].as_bool().unwrap_or(false) && v["maintenance"].is_null(),
+                "maintenance": !v["maintenance"].is_null(),
+                "closedBeta": v["closedBeta"].as_bool().unwrap_or(false),
+                "latency": start.elapsed().as_millis() as i64,
+            }),
+            Err(_) => json!({ "online": false, "latency": -1 }),
+        };
+    }
     if host != "api.radie.app"
         && host != "www.radie.app"
         && host != "launcher.radie.app"
@@ -232,6 +245,7 @@ pub async fn get_player_count(app: tauri::AppHandle, network: Option<String>) ->
         Network::Vanilla => return vanilla::get_player_count().await,
         // Counted from Stella's live presence; see `stella_hub::player_count`.
         Network::Stella => return crate::stella_hub::player_count(app),
+        Network::RecEos => return crate::receos_api::get_player_count().await,
         Network::Radium => {}
     }
 
@@ -285,6 +299,7 @@ pub async fn fetch_rooms(app: tauri::AppHandle, args: Value) -> Value {
         // are applied there over every room rather than over one API page.
         Network::Vanilla => return vanilla::fetch_rooms(skip, take, &query, &tag, sort_by).await,
         Network::Stella => return crate::stella_api::fetch_rooms(&app, skip, take, &query, &tag, sort_by).await,
+        Network::RecEos => return crate::receos_api::fetch_rooms(skip, take, &query, &tag, sort_by).await,
         Network::Radium => {}
     }
 
@@ -328,6 +343,7 @@ pub async fn fetch_people(app: tauri::AppHandle, args: Value) -> Value {
         // With no query, Stella's list is the players online now, which the
         // live hub (started through the app) knows.
         Network::Stella => return crate::stella_api::fetch_people(&app, skip, take, &query).await,
+        Network::RecEos => return crate::receos_api::fetch_people(skip, take, &query).await,
         Network::Radium => {}
     }
 
@@ -359,6 +375,7 @@ pub async fn fetch_filters(network: Option<String>) -> Value {
         // the cached room set. See vanilla::fetch_filters.
         Network::Vanilla => return vanilla::fetch_filters().await,
         Network::Stella => return crate::stella_api::fetch_filters().await,
+        Network::RecEos => return crate::receos_api::fetch_filters().await,
         Network::Radium => {}
     }
 
@@ -387,6 +404,7 @@ pub async fn fetch_room_photos(args: Value) -> Value {
 
     match network_of(&args) {
         Network::Stella => crate::stella_api::fetch_room_photos(&room_id, skip, take).await,
+        Network::RecEos => crate::receos_api::fetch_room_photos(&room_id, skip, take).await,
         _ => no_public_api(),
     }
 }
@@ -407,6 +425,7 @@ pub async fn fetch_user_photos(args: Value) -> Value {
     match network_of(&args) {
         Network::Vanilla => return vanilla::fetch_user_photos(&user_id, skip, take).await,
         Network::Stella => return crate::stella_api::fetch_user_photos(&user_id, skip, take).await,
+        Network::RecEos => return crate::receos_api::fetch_user_photos(&user_id, skip, take).await,
         Network::Radium => {}
     }
 
@@ -438,7 +457,7 @@ pub async fn fetch_user_inventions(args: Value) -> Value {
 
     match network_of(&args) {
         Network::Stella => crate::stella_api::fetch_user_inventions(&user_id, skip, take).await,
-        Network::Radium | Network::Vanilla => json!({
+        Network::Radium | Network::Vanilla | Network::RecEos => json!({
             "success": true,
             "data": { "Results": [], "TotalResults": 0, "TotalKnown": true }
         }),
@@ -461,6 +480,7 @@ pub async fn fetch_user_rooms(args: Value) -> Value {
     match network_of(&args) {
         Network::Vanilla => return vanilla::fetch_user_rooms(&user_id, skip, take).await,
         Network::Stella => return crate::stella_api::fetch_user_rooms(&user_id, skip, take).await,
+        Network::RecEos => return crate::receos_api::fetch_user_rooms(&user_id, skip, take).await,
         Network::Radium => {}
     }
 
@@ -495,7 +515,7 @@ pub async fn fetch_user_feed(args: Value) -> Value {
         // this is only reachable defensively.
         // Neither Vanilla nor Stella publishes a per-user activity feed, so the
         // FEEDS tab shows an empty state rather than erroring.
-        Network::Vanilla | Network::Stella => {
+        Network::Vanilla | Network::Stella | Network::RecEos => {
             return json!({
                 "success": true,
                 "data": { "Results": [], "TotalResults": 0 }
@@ -527,7 +547,7 @@ pub async fn prefetch_network_data(network: Option<String>) {
     match Network::parse(network.as_deref()) {
         Network::Vanilla => vanilla::prefetch(),
         Network::Stella => crate::stella_api::prefetch_rooms(),
-        Network::Radium => {}
+        Network::Radium | Network::RecEos => {}
     }
 }
 
@@ -547,6 +567,7 @@ pub async fn fetch_recent_photos(args: Value) -> Value {
             return vanilla::fetch_recent_photos(skip, take).await;
         }
         Network::Stella => return no_public_api(),
+        Network::RecEos => return crate::receos_api::fetch_recent_photos(skip, take).await,
         Network::Radium => {}
     }
 

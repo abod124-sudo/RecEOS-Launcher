@@ -7,6 +7,9 @@ pub mod desktop_notify;
 pub mod download;
 pub mod frost;
 pub mod game;
+pub mod receos;
+pub mod receos_api;
+pub mod receos_social;
 pub mod scraper;
 pub mod server;
 pub mod stella;
@@ -154,6 +157,26 @@ pub fn run() {
             // Stella's patch
             stella::stella_patch_status,
             stella::stella_update_patch,
+            receos::receos_patch_status,
+            receos::receos_update_patch,
+            receos::receos_server_status,
+            receos_social::receos_auth_status,
+            receos_social::receos_login,
+            receos_social::receos_logout,
+            receos_social::receos_friends,
+            receos_social::receos_set_friend_favorite,
+            receos_social::receos_accept_friend_request,
+            receos_social::receos_send_friend_request,
+            receos_social::receos_remove_friend,
+            receos_social::receos_notifications,
+            receos_social::receos_updates,
+            receos_social::receos_chat_threads,
+            receos_social::receos_chat_messages,
+            receos_social::receos_chat_send,
+            receos_social::receos_chat_open,
+            receos_social::receos_chat_read,
+            receos_social::receos_room_interaction,
+            receos_social::receos_set_room_interaction,
             // Stella account
             stella_api::stella_auth_status,
             stella_api::stella_login,

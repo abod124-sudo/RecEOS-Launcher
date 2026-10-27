@@ -72,6 +72,8 @@ const ALLOWED_HOSTS: &[&str] = &[
     "cdn.recroomarchive.org",
     "api.stellaonline.org",
     "img.stellaonline.org",
+    // Rec EOS: `/files/<name>` (receos_api::image_url).
+    "api.rec-eos.com",
 ];
 
 /// Widest thumbnail anyone may ask for.

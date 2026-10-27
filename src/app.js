@@ -129,7 +129,7 @@ window.addEventListener('unhandledrejection', (e) => {
 // Which revival the launcher is pointed at. Read by the IPC shim below so every
 // backend call carries it, instead of threading the value through ~30 call
 // sites. Set from config at startup by setNetwork().
-let activeNetwork = 'radium';
+let activeNetwork = 'receos';
 
 /// What the backend was last told about whether Stella is in use (see
 /// syncStellaInUse()). Up here because applyNetworkUI() runs during startup,
@@ -157,6 +157,31 @@ function syncStellaInUse() {
 // actually do — Vanilla has no activity feed and no presence — so the UI hides
 // controls rather than showing dead ones.
 const NETWORKS = {
+  // The main network, so first: the switcher, the tray and Settings list
+  // the networks in this order.
+  receos: {
+    label: 'REC EOS',
+    logo: 'assets/receos-icon.png',
+    site: 'https://rec-eos.com/',
+    downloadPage: 'https://rec-eos.com/discord',
+    // Images come back as absolute addresses (receos_api::image_url).
+    imageBase: '',
+    // Rooms, people, profiles and photos from rec-eos.com's public API
+    // (receos_api.rs). It sorts by cheers or by newest only, and lists
+    // players only for a search.
+    hasFilters: true,
+    hasSort: true,
+    hasFeed: false,
+    hasPresence: false,
+    hasPhotoFeed: false,
+    hasInventions: false,
+    // Before a search, players online now, then the most recently seen.
+    hasPeopleBrowse: true,
+    needsConfiguredDownloadUrl: false,
+    // The client is the stock game; the Rec EOS mod goes in with UPDATE.
+    hasPatch: true,
+    patchLabel: 'Rec EOS'
+  },
   radium: {
     label: 'RADIUM',
     logo: 'logo.png',
@@ -216,7 +241,8 @@ const NETWORKS = {
     hasPeopleBrowse: true,
     needsConfiguredDownloadUrl: false,
     // The client is patched at launch; the patch has its own UPDATE button.
-    hasPatch: true
+    hasPatch: true,
+    patchLabel: "Stella's patch"
   }
 };
 
@@ -235,7 +261,7 @@ function setNetworkState(network, fields) {
 }
 
 function networkInfo(name = activeNetwork) {
-  return NETWORKS[name] || NETWORKS.radium;
+  return NETWORKS[name] || NETWORKS.receos;
 }
 
 /// Install directories are per-network: Radium's lives on the flat
@@ -449,6 +475,32 @@ function withoutBackdrop(cfg) {
       unlistenMap['stella-patch-progress'] = await listen('stella-patch-progress', (event) => cb(event.payload));
     },
 
+    // Rec EOS account and what it opens (receos_social.rs).
+    receosAuthStatus: () => invoke('receos_auth_status'),
+    receosLogin: (username, password) => invoke('receos_login', { username, password }),
+    receosLogout: () => invoke('receos_logout'),
+    receosFriends: () => invoke('receos_friends'),
+    receosSetFriendFavorite: (id, on) => invoke('receos_set_friend_favorite', { id: Number(id), on: !!on }),
+    receosAcceptFriendRequest: (id) => invoke('receos_accept_friend_request', { id: Number(id) }),
+    receosSendFriendRequest: (id) => invoke('receos_send_friend_request', { id: Number(id) }),
+    receosNotifications: () => invoke('receos_notifications'),
+    receosUpdates: (afterMessageId, afterChatMessageId) => invoke('receos_updates', { afterMessageId: afterMessageId ?? null, afterChatMessageId: afterChatMessageId ?? null }),
+    receosChatThreads: () => invoke('receos_chat_threads'),
+    receosChatMessages: (threadId, before) => invoke('receos_chat_messages', { threadId: Number(threadId), before: before ?? null }),
+    receosChatSend: (threadId, text) => invoke('receos_chat_send', { threadId: Number(threadId), text: String(text) }),
+    receosChatOpen: (playerIds, text) => invoke('receos_chat_open', { playerIds: playerIds.map(Number), text: text ?? null }),
+    receosChatRead: (threadId, messageId) => invoke('receos_chat_read', { threadId: Number(threadId), messageId: Number(messageId) }),
+    receosRoomInteraction: (roomId) => invoke('receos_room_interaction', { roomId: Number(roomId) }),
+    receosSetRoomInteraction: (roomId, cheer, favorite) => invoke('receos_set_room_interaction', { roomId: Number(roomId), cheer: cheer ?? null, favorite: favorite ?? null }),
+
+    // The Rec EOS mod: whether it needs an UPDATE, and running one.
+    receosPatchStatus: () => invoke('receos_patch_status'),
+    receosUpdatePatch: () => invoke('receos_update_patch'),
+    onReceosPatchProgress: async (cb) => {
+      if (unlistenMap['receos-patch-progress']) unlistenMap['receos-patch-progress']();
+      unlistenMap['receos-patch-progress'] = await listen('receos-patch-progress', (event) => cb(event.payload));
+    },
+
     // Game
     launchGame: (cfg) => invoke('launch_game', { config: { ...cfg, network: activeNetwork } }),
     killGame:   ()    => invoke('kill_game'),
@@ -629,6 +681,8 @@ let needsRepair           = false;
 // since the client was found), and whether an UPDATE is running.
 let stellaPatch           = null;
 let stellaPatchUpdating   = false;
+// Which network `stellaPatch` was checked for (Stella or Rec EOS).
+let stellaPatchNetwork    = null;
 // Where Stella keeps its patch (from checkInstall); outside the client folder.
 let stellaPatchDir        = '';
 let playMode              = 'screen';
@@ -842,12 +896,16 @@ function photoImageUrl(photo, width) {
 /// clips it. What used to stand in here was images.png, which is the Radium
 /// logo: on Vanilla every player without a picture, and every desktop pop-up,
 /// wore Radium's brand.
-const PLACEHOLDER_AVATAR = './assets/default-avatar.png';
+/// The picture for a player who has none: Rec EOS's logo there (as its
+/// website shows), the generic one elsewhere.
+function placeholderAvatar() {
+  return activeNetwork === 'receos' ? './assets/receos-icon.png' : './assets/default-avatar.png';
+}
 
 /// Placeholder avatar for a network. Radium has a real DefaultProfileImage on
 /// its CDN; Vanilla has no such asset, so it gets the bundled one.
 function defaultAvatarUrl(width) {
-  if (activeNetwork !== 'radium') return PLACEHOLDER_AVATAR;
+  if (activeNetwork !== 'radium') return placeholderAvatar();
   return thumbSrc(`${RADIUM_IMG_BASE}/DefaultProfileImage?width=${devicePx(width)}&cropSquare=1`, width);
 }
 
@@ -992,7 +1050,7 @@ function buildPhotoCard(photo, backToView) {
       <img class="feed-post-avatar creator-avatar image-loading-placeholder"
            src="${escapeHtml(thumbSrc(photo.CreatorAvatarUrl, avatarWidth(36)) || defaultAvatarUrl(36))}"
            loading="lazy" decoding="async"
-           data-fallback="${PLACEHOLDER_AVATAR}" />
+           data-fallback="${placeholderAvatar()}" />
       <div class="feed-post-header-text">
         <div class="feed-post-creator creator-name">${escapeHtml(embedded ? creator : 'Loading...')}</div>
         <div class="feed-post-meta">
@@ -1370,8 +1428,8 @@ function renderMutualFriends(people) {
     const img = document.createElement('img');
     img.alt = '';
     img.loading = 'lazy';
-    img.dataset.fallback = PLACEHOLDER_AVATAR;
-    img.src = p.AvatarUrl ? thumbSrc(p.AvatarUrl, avatarWidth(22)) : PLACEHOLDER_AVATAR;
+    img.dataset.fallback = placeholderAvatar();
+    img.src = p.AvatarUrl ? thumbSrc(p.AvatarUrl, avatarWidth(22)) : placeholderAvatar();
     pic.append(img);
     chip.append(pic, friendSpan('friend-chip-name', name));
     chip.addEventListener('click', () => showCreatorProfile(p.userName, {
@@ -1404,6 +1462,8 @@ function joinedLabel(iso) {
 /// then overrides where one exists.
 function defaultProfileBanner() {
   if (activeNetwork === 'vanilla') return "url('assets/vanilla-pattern.png')";
+  // Rec EOS: its own banner art, as on Home.
+  if (activeNetwork === 'receos') return "url('assets/receos-pattern.jpg'), linear-gradient(#2f87d8, #2f87d8)";
   // Stella has no default banner image of its own, so it gets the Stella Home
   // hero: the logo on its maroon glow (style.css, .home-hero-art).
   if (activeNetwork === 'stella') {
@@ -1425,7 +1485,7 @@ function personAvatarFullUrl(person) {
   if (!name || name === 'DefaultProfileImage') {
     return activeNetwork === 'radium'
       ? `${RADIUM_IMG_BASE}/DefaultProfileImage`
-      : PLACEHOLDER_AVATAR;
+      : placeholderAvatar();
   }
   return `${RADIUM_IMG_BASE}/${name}`;
 }
@@ -1507,6 +1567,8 @@ document.querySelectorAll('.sidebar-nav .nav-btn').forEach(btn => {
       if (!$('feedGrid')?.children.length) loadFeed();
     } else if (tabName === 'friends') {
       refreshStellaFriends();
+    } else if (tabName === 'chats') {
+      loadChatThreads();
     }
   });
 });
@@ -1890,7 +1952,7 @@ $('tgl-launchAtStartup')?.addEventListener('click', async () => {
   try {
     const now = await window.radium.setAutostart(want);
     setToggle('tgl-launchAtStartup', now);
-    addLog(now ? 'Radium Launcher will start with Windows' : 'Radium Launcher will no longer start with Windows', 'info');
+    addLog(now ? 'Rec EOS Launcher will start with Windows' : 'Rec EOS Launcher will no longer start with Windows', 'info');
   } catch (err) {
     setToggle('tgl-launchAtStartup', !want);
     toast(String(err), 'error');
@@ -1919,7 +1981,7 @@ window.radium?.onLauncherHidden?.(() => {
     id: 'tray-hint',
     sender: null,
     icon: 'bell',
-    app: 'Radium Launcher',
+    app: 'Rec EOS Launcher',
     style: notifPopStyle(),
     parts: [
       { t: 'Still running in the background. ', b: true },
@@ -3139,9 +3201,10 @@ async function checkInstall() {
         outdatedPromptKey = promptKey;
         showModal($('clientUpdateModal'));
       }
-    } else if (activeNetwork === 'stella') {
-      // Stella's client has no version feed; what updates is its patch, which
-      // has its own Steam-style UPDATE button. Throttled inside.
+    } else if (networkInfo().hasPatch) {
+      // Stella's and Rec EOS's clients have no version feed; what updates is
+      // the patch (Stella's DLL, the Rec EOS mod), which has its own
+      // Steam-style UPDATE button. Throttled inside.
       refreshStellaPatch();
     } else if (!result?.isRunning && !clientUpdateAutoChecked) {
       // Live version check against recroom.baby (Steam-style update prompt).
@@ -3555,6 +3618,7 @@ async function runClientDownload({ resuming = false } = {}) {
       vanilla: 'Starting download from the configured Vanilla client URL...',
       // Sent without a length, so the bar can't show a percentage.
       stella: "Starting download from Stella (about 4.7 GB; Stella's server doesn't send the size)...",
+      receos: 'Starting download of the Rec EOS client from MediaFire (about 3.1 GB)...',
     }[activeNetwork] || 'Starting download...', 'info', 'install');
     toast('Download started!', 'info', 2500);
   }
@@ -3584,6 +3648,12 @@ async function runClientDownload({ resuming = false } = {}) {
     if (activeNetwork === 'stella') {
       stellaPatch = null;
       if (result.patchInstalled) addLog("Stella's patch installed (a checked build).", 'ok', 'install');
+    }
+    if (activeNetwork === 'receos') {
+      stellaPatch = null;
+      addLog(result.patchInstalled
+        ? 'Rec EOS installed into the client.'
+        : "The client is installed, but Rec EOS couldn't be added yet. Press UPDATE on Home.", result.patchInstalled ? 'ok' : 'warn', 'install');
     }
     // The download stamped a new client build id / version / ETag directly into
     // config.json. Re-sync our in-memory copy from disk so the next settings
@@ -3749,7 +3819,7 @@ $('btnClientUpdateAction')?.addEventListener('click', () => {
     return;
   }
   if (btn?.dataset.mode === 'checking') return;
-  if (activeNetwork === 'stella') {
+  if (networkInfo().hasPatch) {
     refreshStellaPatch({ manual: true });
     return;
   }
@@ -3835,8 +3905,15 @@ let stellaPatchCheckedAt = 0;
 let stellaPatchCheckSeq = 0;
 
 function stellaUpdateNeeded() {
-  return activeNetwork === 'stella' && isInstalled
+  return networkInfo().hasPatch && stellaPatchNetwork === activeNetwork && isInstalled
     && (stellaPatchUpdating || stellaPatch?.updateAvailable === true);
+}
+
+/// The backend calls for the active network's patch.
+function patchApi(network = activeNetwork) {
+  return network === 'receos'
+    ? { status: () => window.radium?.receosPatchStatus(), update: () => window.radium?.receosUpdatePatch() }
+    : { status: () => window.radium?.stellaPatchStatus(), update: () => window.radium?.stellaUpdatePatch() };
 }
 
 function setStellaUpdateProgress(title, pct) {
@@ -3855,15 +3932,20 @@ function applyStellaPatchUI() {
   if (btn) btn.disabled = stellaPatchUpdating;
   if (!stellaPatchUpdating) {
     // Steam says QUEUED for an update waiting on you and REQUIRED when the
-    // game can't run without it; a missing patch is the second.
-    setStellaUpdateProgress(stellaPatch?.installed ? 'UPDATE QUEUED' : 'UPDATE REQUIRED', 0);
+    // game can't run without it; a missing patch is the second, and so is a
+    // Rec EOS build its server no longer lets in.
+    const required = !stellaPatch?.installed || stellaPatch?.required === true;
+    setStellaUpdateProgress(required ? 'UPDATE REQUIRED' : 'UPDATE QUEUED', 0);
   }
 }
 
 /// Ask whether Stella's patch needs installing or has a new build. Automatic
 /// checks are throttled; a manual one (Check for Updates) always runs.
 async function refreshStellaPatch({ manual = false } = {}) {
-  if (activeNetwork !== 'stella' || !isInstalled || stellaPatchUpdating) return;
+  const net = activeNetwork;
+  if (!networkInfo(net).hasPatch || !isInstalled || stellaPatchUpdating) return;
+  // A check made for the other patch network says nothing about this one.
+  if (stellaPatchNetwork !== net) { stellaPatch = null; stellaPatchCheckedAt = 0; }
   if (!manual && stellaPatch && Date.now() - stellaPatchCheckedAt < STELLA_PATCH_RECHECK_MS) {
     applyStellaPatchUI();
     return;
@@ -3872,34 +3954,44 @@ async function refreshStellaPatch({ manual = false } = {}) {
   if (manual) setClientUpdateButton('checking');
   let status = null;
   try {
-    status = await window.radium?.stellaPatchStatus();
+    status = await patchApi(net).status();
   } catch (e) {
     status = { success: false, error: String(e) };
   }
   // A switch away, or a newer check, while this one was in flight.
-  if (seq !== stellaPatchCheckSeq || activeNetwork !== 'stella') return;
+  if (seq !== stellaPatchCheckSeq || activeNetwork !== net) return;
   stellaPatchCheckedAt = Date.now();
   stellaPatch = status;
+  stellaPatchNetwork = net;
   if (isInstalled) setClientUpdateButton('check');
   applyStellaPatchUI();
 
+  const name = net === 'receos' ? 'Rec EOS' : 'Stella';
   if (!status?.success) {
     const reason = status?.error || 'Unknown error';
-    addLog(`Couldn't check for a Stella update: ${reason}`, 'warn', 'install');
+    addLog(`Couldn't check for a ${name} update: ${reason}`, 'warn', 'install');
     if (manual) toast(`Update check failed: ${reason}`, 'error', 4000);
   } else if (status.updateAvailable) {
-    addLog(status.installed
-      ? `Stella has an update (patch ${status.latestSha256.slice(0, 12)}…). Press UPDATE on Home to install it.`
-      : 'Stella needs its patch before it can be played. Press UPDATE on Home to install it.', 'warn', 'install');
-    if (manual) toast('Stella has an update.', 'ok', 3000);
+    if (net === 'receos') {
+      addLog(status.installed
+        ? `Rec EOS has an update (build ${status.latestBuild}${status.installedBuild ? `, you have ${status.installedBuild}` : ''}). Press UPDATE on Home to install it.`
+        : 'Rec EOS needs to be added to the game before it can be played. Press UPDATE on Home.', 'warn', 'install');
+    } else {
+      addLog(status.installed
+        ? `Stella has an update (patch ${status.latestSha256.slice(0, 12)}…). Press UPDATE on Home to install it.`
+        : 'Stella needs its patch before it can be played. Press UPDATE on Home to install it.', 'warn', 'install');
+    }
+    if (manual) toast(`${name} has an update.`, 'ok', 3000);
   } else if (manual) {
-    addLog('Stella is up to date.', 'ok', 'install');
-    toast('Stella is up to date.', 'ok', 3000);
+    addLog(`${name} is up to date.`, 'ok', 'install');
+    toast(`${name} is up to date.`, 'ok', 3000);
   }
 }
 
 async function runStellaPatchUpdate() {
-  if (stellaPatchUpdating || activeNetwork !== 'stella') return;
+  const net = activeNetwork;
+  if (stellaPatchUpdating || !networkInfo(net).hasPatch) return;
+  const name = net === 'receos' ? 'Rec EOS' : 'Stella';
   if (isGameRunning || isGameLaunching) {
     toast('Close the game before updating.', 'warn', 4000);
     return;
@@ -3907,11 +3999,11 @@ async function runStellaPatchUpdate() {
   stellaPatchUpdating = true;
   applyStellaPatchUI();
   setStellaUpdateProgress('UPDATING', 0);
-  addLog('Updating Stella...', 'info', 'install');
+  addLog(`Updating ${name}...`, 'info', 'install');
 
   let result = null;
   try {
-    result = await window.radium?.stellaUpdatePatch();
+    result = await patchApi(net).update();
   } catch (e) {
     result = { success: false, error: String(e) };
   }
@@ -3926,16 +4018,23 @@ async function runStellaPatchUpdate() {
       installedSha256: result.sha256,
       latestSha256: result.sha256,
     };
+    if (net === 'receos') {
+      stellaPatch.required = false;
+      stellaPatch.installedBuild = result.build;
+      stellaPatch.latestBuild = result.build;
+    }
     stellaPatchCheckedAt = Date.now();
+    stellaPatchNetwork = net;
     // The backend recorded the accepted build in config.json; keep the next
     // settings autosave from carrying a stale copy (it preserves the field
     // anyway, but the in-memory config should say what is on disk).
     config = (await window.radium?.getConfig()) || config;
-    addLog(`Stella updated (patch ${String(result.sha256).slice(0, 12)}…${result.pinned ? ', a checked build' : ''}).`, 'ok', 'install');
-    toast('Stella is up to date.', 'ok', 3000);
+    if (net === 'receos') addLog(`Rec EOS updated to build ${result.build}.`, 'ok', 'install');
+    else addLog(`Stella updated (patch ${String(result.sha256).slice(0, 12)}…${result.pinned ? ', a checked build' : ''}).`, 'ok', 'install');
+    toast(`${name} is up to date.`, 'ok', 3000);
   } else {
     const err = result?.error || 'Unknown error';
-    addLog(`Stella update failed: ${err}`, 'error', 'install');
+    addLog(`${name} update failed: ${err}`, 'error', 'install');
     toast(`Update failed: ${err}`, 'error', 5000);
   }
   applyStellaPatchUI();
@@ -3943,12 +4042,14 @@ async function runStellaPatchUpdate() {
 
 $('btnStellaUpdate')?.addEventListener('click', () => runStellaPatchUpdate());
 
-window.radium?.onStellaPatchProgress((p) => {
+function onPatchProgress(p) {
   if (!stellaPatchUpdating || !p) return;
   if (p.phase === 'download') setStellaUpdateProgress('UPDATING', p.pct || 0);
   else if (p.phase === 'install') setStellaUpdateProgress('INSTALLING', p.pct || 99);
   else if (p.phase === 'done') setStellaUpdateProgress('INSTALLING', 100);
-});
+}
+window.radium?.onStellaPatchProgress(onPatchProgress);
+window.radium?.onReceosPatchProgress(onPatchProgress);
 
 // A launcher left open for days still finds a new patch.
 setInterval(() => { refreshStellaPatch(); }, STELLA_PATCH_RECHECK_MS);
@@ -4688,7 +4789,7 @@ async function checkServerStatus(silent = false) {
   const isRadium = network === 'radium';
   const apiUrl = isRadium
     ? (config.apiUrl || 'https://api.radie.app/')
-    : { vanilla: 'https://api.vanillarec.net', stella: 'https://api.stellaonline.org' }[activeNetwork];
+    : { vanilla: 'https://api.vanillarec.net', stella: 'https://api.stellaonline.org', receos: 'https://api.rec-eos.com' }[activeNetwork];
   const cdnUrl = 'https://cdn.recroomarchive.org';
 
   // Immediately show CHECKING... in quick stats while pings are in-flight
@@ -4717,7 +4818,11 @@ async function checkServerStatus(silent = false) {
   syncTray();
 
   // Quick stats card on home tab
-  if (qsS) qsS.textContent = apiOnline ? 'Online' : 'Offline';
+  // Rec EOS also says when it is closed to all but its testers, or down for
+  // maintenance.
+  if (qsS) qsS.textContent = apiOnline
+    ? (apiResult?.closedBeta ? 'Closed beta' : 'Online')
+    : (apiResult?.maintenance ? 'Maintenance' : 'Offline');
   const qscS = $('qsc-status');
   if (qscS) {
     qscS.classList.toggle('online',  apiOnline);
@@ -4900,7 +5005,7 @@ let pendingJoin = null;
 
 async function doLaunch() {
   setGameRunning(true);
-  const join = activeNetwork === 'stella' ? pendingJoin : null;
+  const join = stellaLike() ? pendingJoin : null;
   pendingJoin = null;
   addLog(join ? `Launching game to join ${join.name}...` : 'Launching game...', 'info', 'game');
   toast(join ? `Launching ${networkInfo().label} to join ${join.name}...` : `Launching ${networkInfo().label}...`, 'info', 2000);
@@ -5094,17 +5199,18 @@ $('btnPlay')?.addEventListener('click', async () => {
 /// Start Stella with `target` as where it goes (see pendingJoin), through the
 /// same checks PLAY runs. `what` names it in the messages.
 function launchStellaInto(target, what) {
+  const label = activeNetwork === 'receos' ? 'Rec EOS' : 'Stella';
   if (isGameRunning) {
-    toast(`Stella is already running. Go to ${what} from the game.`, 'info', 5000);
+    toast(`${label} is already running. Go to ${what} from the game.`, 'info', 5000);
     return;
   }
   if (isGameLaunching) return;
   if (!isInstalled) {
-    toast('Download Stella first, from Home.', 'info');
+    toast(`Download ${label} first, from Home.`, 'info');
     return;
   }
   if (stellaUpdateNeeded()) {
-    toast("Stella's patch needs an update first. Press UPDATE on Home.", 'info', 5000);
+    toast(`${networkInfo().patchLabel || label} needs an update first. Press UPDATE on Home.`, 'info', 5000);
     return;
   }
   isGameLaunching = true;
@@ -5271,7 +5377,7 @@ function showStellaInvite(invite) {
     id: `stella-invite:${id}`,
     sender: null,
     icon: null,
-    avatar: friend?.AvatarUrl ? thumbSrc(friend.AvatarUrl, avatarWidth(40)) : PLACEHOLDER_AVATAR,
+    avatar: friend?.AvatarUrl ? thumbSrc(friend.AvatarUrl, avatarWidth(40)) : placeholderAvatar(),
     app: 'Stella',
     parts: [{ t: name, b: true }, { t: ` invited you to join them in ${where}.` }],
     action: 'JOIN',
@@ -5443,9 +5549,9 @@ let trayLastCount = null;
 function trayGame() {
   const text = (id) => ($(id)?.textContent || '').trim();
   if (isGameRunning) return { state: 'stop', startedAt: gameStartedAt };
-  if (activeNetwork === 'stella' && stellaPatchUpdating) {
+  if (networkInfo().hasPatch && stellaPatchUpdating) {
     const pct = parseFloat($('stellaUpdateFill')?.style.width);
-    return { state: 'progress', title: 'Updating Stella', pct: Number.isFinite(pct) ? Math.round(pct) : 0, detail: '', canPause: false };
+    return { state: 'progress', title: `Updating ${networkInfo().patchLabel || networkInfo().label}`, pct: Number.isFinite(pct) ? Math.round(pct) : 0, detail: '', canPause: false };
   }
   if (isDownloading || isPaused || isCancelling) {
     const fill = $('dlBarFill');
@@ -5985,14 +6091,19 @@ $('btnCheckUpdates')?.addEventListener('click', async () => {
 /// from setNetwork() so startup can brand the UI without triggering a reload
 /// of data that init() is about to fetch anyway.
 function applyNetworkUI(name) {
-  activeNetwork = NETWORKS[name] ? name : 'radium';
+  activeNetwork = NETWORKS[name] ? name : 'receos';
   const info = networkInfo();
 
   for (const name of Object.keys(NETWORKS)) {
     document.body.classList.toggle(`network-${name}`, activeNetwork === name);
   }
   document.body.classList.toggle('network-no-social', info.hasSocial === false);
-  // The UPDATE button is Stella's; another network never inherits it.
+  // The UPDATE button belongs to the network it was checked for (Stella or
+  // Rec EOS); another network never inherits it.
+  if (stellaPatchNetwork !== activeNetwork && !stellaPatchUpdating) {
+    stellaPatch = null;
+    stellaPatchCheckedAt = 0;
+  }
   applyStellaPatchUI();
   // Who is signed in to Stella, and their friends. Deferred: at startup this
   // runs before the account section of this file has been evaluated. Leaving
@@ -6001,6 +6112,9 @@ function applyNetworkUI(name) {
   syncStellaInUse();
   if (activeNetwork === 'stella') {
     setTimeout(() => { refreshStellaAuth(); refreshStellaFriends(); }, 0);
+  } else if (activeNetwork === 'receos') {
+    window.radium?.stellaFriendsStop?.().catch(() => {});
+    setTimeout(() => { refreshStellaFriends(); }, 0);
   } else {
     window.radium?.stellaFriendsStop?.().catch(() => {});
   }
@@ -6195,8 +6309,11 @@ async function setNetwork(name) {
     // on a tab whose nav button just disappeared would strand them.
     if (networkInfo().hasPhotoFeed) loadFeed(false, { refresh: true });
     else switchTab('home');
-  } else if (openTab === 'tab-friends' && activeNetwork !== 'stella') {
-    // Likewise FRIENDS, which is Stella's.
+  } else if (openTab === 'tab-friends' && !stellaLike()) {
+    // Likewise FRIENDS, which is Stella's and Rec EOS's.
+    switchTab('home');
+  } else if (openTab === 'tab-chats' && activeNetwork !== 'receos') {
+    // And CHATS, Rec EOS's.
     switchTab('home');
   } else if (openTab === 'tab-home') {
     loadHomeRooms();
@@ -6495,7 +6612,7 @@ function renderVanillaAccount() {
     const shown = vanillaPlayer.displayName && vanillaPlayer.displayName !== handle
       ? `${vanillaPlayer.displayName} (@${handle})` : `@${handle}`;
     btn.setAttribute('aria-label', `Signed in to Vanilla as ${shown}`);
-    avatar.dataset.fallback = PLACEHOLDER_AVATAR;
+    avatar.dataset.fallback = placeholderAvatar();
     avatar.src = vanillaPlayer.AvatarUrl
       ? thumbSrc(vanillaPlayer.AvatarUrl, avatarWidth(28))
       : defaultAvatarUrl(28);
@@ -6689,10 +6806,10 @@ function renderStellaAccount() {
     name.textContent = stellaPlayer.displayName || handle;
     const differs = stellaPlayer.displayName && stellaPlayer.displayName !== handle;
     btn.setAttribute('aria-label', `Signed in to Stella as ${differs ? `${stellaPlayer.displayName} (@${handle})` : `@${handle}`}`);
-    avatar.dataset.fallback = PLACEHOLDER_AVATAR;
+    avatar.dataset.fallback = placeholderAvatar();
     avatar.src = stellaPlayer.AvatarUrl
       ? thumbSrc(stellaPlayer.AvatarUrl, avatarWidth(28))
-      : PLACEHOLDER_AVATAR;
+      : placeholderAvatar();
     avatar.hidden = false;
     btn.setAttribute('aria-haspopup', 'menu');
     $('stellaAccountFullName').textContent = `@${handle}`;
@@ -6898,8 +7015,8 @@ function renderStellaAccountChoices(accounts) {
       <span class="account-choice-state" aria-hidden="true">${isCurrent ? 'Signed in' : ''}</span>
     `;
     const img = btn.querySelector('img');
-    img.dataset.fallback = PLACEHOLDER_AVATAR;
-    img.src = a.AvatarUrl ? thumbSrc(a.AvatarUrl, avatarWidth(40)) : PLACEHOLDER_AVATAR;
+    img.dataset.fallback = placeholderAvatar();
+    img.src = a.AvatarUrl ? thumbSrc(a.AvatarUrl, avatarWidth(40)) : placeholderAvatar();
     btn.addEventListener('click', () => pickStellaAccount(id, btn));
     list.appendChild(btn);
   }
@@ -7091,21 +7208,23 @@ function applyFriendsView() {
 }
 
 async function refreshStellaFriends() {
-  if (activeNetwork !== 'stella') return;
+  const net = activeNetwork;
+  if (!stellaLike(net)) return;
   // Hidden: no list to fill, so no reason to hold the friends connection
   // open for it. (A profile page still starts it for its own status.)
   if (friendsView() === 'hidden') return;
-  if (!stellaPlayer) {
+  if (!socialPlayer()) {
     renderStellaFriends(null);
     return;
   }
   let res;
   try {
-    res = await window.radium.stellaFriends();
+    res = net === 'receos' ? await window.radium.receosFriends() : await window.radium.stellaFriends();
   } catch (e) {
     res = { success: false, error: String(e) };
   }
-  if (activeNetwork !== 'stella' || !stellaPlayer) return;
+  if (activeNetwork !== net || !socialPlayer()) return;
+  if (net === 'receos' && res?.success) receosFriendsList = res.friends || [];
   renderStellaFriends(res);
 }
 
@@ -7197,7 +7316,7 @@ async function setStellaFavorite(f, on) {
   };
   mark(on);
   try {
-    await window.radium.stellaSetFriendFavorite(id, on);
+    await (activeNetwork === 'receos' ? window.radium.receosSetFriendFavorite(id, on) : window.radium.stellaSetFriendFavorite(id, on));
   } catch (e) {
     mark(!on);
     const why = String(e).trim().replace(/([^.!?])$/, '$1.');
@@ -7205,7 +7324,7 @@ async function setStellaFavorite(f, on) {
     toast(`Couldn't ${on ? 'favorite' : 'unfavorite'} ${name}: ${why}`, 'error');
     return;
   }
-  addLog(on ? `Added ${name} to your Stella favorites.` : `Removed ${name} from your Stella favorites.`, 'ok', 'account');
+  addLog(on ? `Added ${name} to your ${socialLabel()} favorites.` : `Removed ${name} from your ${socialLabel()} favorites.`, 'ok', 'account');
 }
 
 /// Accept a friend request. `btn` shows it working.
@@ -7218,7 +7337,7 @@ async function acceptStellaRequest(r, btn) {
     btn.textContent = 'ACCEPTING…';
   }
   try {
-    await window.radium.stellaAcceptFriendRequest(id);
+    await (activeNetwork === 'receos' ? window.radium.receosAcceptFriendRequest(id) : window.radium.stellaAcceptFriendRequest(id));
   } catch (e) {
     if (btn?.isConnected) {
       btn.disabled = false;
@@ -7230,13 +7349,18 @@ async function acceptStellaRequest(r, btn) {
     return;
   }
   stellaRequestsById.delete(id);
-  addLog(`You and ${name} are now friends on Stella.`, 'ok', 'account');
+  addLog(`You and ${name} are now friends on ${socialLabel()}.`, 'ok', 'account');
   toast(`You and ${name} are now friends.`, 'ok');
   await refreshStellaFriends();
-  paintStellaFriendActions(id, playerDetailSeq);
+  if (activeNetwork === 'stella') paintStellaFriendActions(id, playerDetailSeq);
 }
 
 function openFriendProfile(f) {
+  // A Rec EOS player's profile, rooms and photos are found by username.
+  if (activeNetwork === 'receos') {
+    showCreatorProfile(f.userName, { id: f.userName, displayName: f.displayName, avatarUrl: f.AvatarUrl });
+    return;
+  }
   showCreatorProfile(f.userName, {
     id: f.id,
     displayName: f.displayName,
@@ -7260,8 +7384,8 @@ function friendAvatar(f, size) {
   const img = document.createElement('img');
   img.alt = '';
   img.loading = 'lazy';
-  img.dataset.fallback = PLACEHOLDER_AVATAR;
-  img.src = f.AvatarUrl ? thumbSrc(f.AvatarUrl, avatarWidth(size)) : PLACEHOLDER_AVATAR;
+  img.dataset.fallback = placeholderAvatar();
+  img.src = f.AvatarUrl ? thumbSrc(f.AvatarUrl, avatarWidth(size)) : placeholderAvatar();
   pic.append(img, friendSpan('friend-dot', ''));
   return pic;
 }
@@ -7312,8 +7436,13 @@ function buildFriendCard(f, size, withHandle, starToggle = false) {
     join.type = 'button';
     join.className = 'modal-btn modal-btn-primary friend-join';
     join.textContent = 'JOIN';
-    join.setAttribute('aria-label', f.private && !stellaInvitedBy(f.id) ? `Ask ${name} to let you into their private room` : `Start Stella and join ${name}`);
-    join.addEventListener('click', () => joinStellaFriend(f));
+    if (activeNetwork === 'receos') {
+      join.setAttribute('aria-label', `Start Rec EOS and join ${name}`);
+      join.addEventListener('click', () => joinReceosFriend(f));
+    } else {
+      join.setAttribute('aria-label', f.private && !stellaInvitedBy(f.id) ? `Ask ${name} to let you into their private room` : `Start Stella and join ${name}`);
+      join.addEventListener('click', () => joinStellaFriend(f));
+    }
     card.append(join);
   }
   return card;
@@ -7412,7 +7541,12 @@ function renderStellaFriendsInto(list, count, res, isTab) {
   };
   count.classList.remove('has-online');
 
-  if (!stellaPlayer) {
+  if (activeNetwork === 'receos' && !receosPlayer) {
+    count.textContent = '';
+    note('Sign in to Rec EOS to see your friends.');
+    return;
+  }
+  if (activeNetwork !== 'receos' && !stellaPlayer) {
     count.textContent = '';
     note(stellaAuthPending ? 'Signing in…'
       : stellaAuthError === STELLA_NO_ACCOUNT ? STELLA_NO_ACCOUNT_TEXT
@@ -7525,7 +7659,7 @@ window.radium?.onStellaFriends?.(queueStellaFriends);
 // "Checking…" turns into "Offline", and a friend gone quiet into offline, by
 // time passing rather than by an event, so the card is redrawn now and then.
 setInterval(() => {
-  if (activeNetwork === 'stella' && stellaPlayer && !document.hidden) refreshStellaFriends();
+  if (stellaLike() && socialPlayer() && !document.hidden) refreshStellaFriends();
 }, 20000);
 
 // The LOG IN button a signed-out Rooms or People list shows.
@@ -7551,6 +7685,548 @@ document.addEventListener('keydown', (e) => {
     $('stellaAccountBtn')?.focus();
   }
 });
+
+// ── Rec EOS account ──────────────────────────────────────────────────────
+// Signed in with the Rec EOS username and password (receos_social.rs). That
+// opens what Stella's Steam sign-in opens there: friends and where they are,
+// friend requests and game invites on the bell, JOIN, room cheers and
+// favorites, and Rec EOS's own CHATS tab. The friends list, the bell and the
+// room tiles are Stella's, pointed at Rec EOS (see stellaLike/socialPlayer).
+
+let receosPlayer = null;
+/// The last friends list, for starting a chat.
+let receosFriendsList = [];
+
+/// Stella and Rec EOS share the friends list, invites and room tiles.
+function stellaLike(net = activeNetwork) {
+  return net === 'stella' || net === 'receos';
+}
+
+/// Whoever is signed in to the network on show (Stella or Rec EOS).
+function socialPlayer() {
+  return activeNetwork === 'receos' ? receosPlayer : stellaPlayer;
+}
+
+function socialLabel() {
+  return activeNetwork === 'receos' ? 'Rec EOS' : 'Stella';
+}
+
+function requireSocialLogin(what) {
+  if (activeNetwork !== 'receos') return requireStellaLogin(what);
+  if (receosPlayer) return true;
+  toast(`Sign in to Rec EOS to ${what}.`, 'info');
+  openReceosLogin();
+  return false;
+}
+
+/// `{ cheered, favorited }` for a room, on Stella or Rec EOS.
+async function roomInteraction(roomId) {
+  if (activeNetwork === 'receos') {
+    const s = await window.radium.receosRoomInteraction(roomId);
+    return { cheered: !!s?.Cheered, favorited: !!s?.Favorited };
+  }
+  return window.radium.stellaRoomInteraction(roomId);
+}
+
+async function setRoomInteraction(roomId, kind, on) {
+  if (activeNetwork === 'receos') {
+    await window.radium.receosSetRoomInteraction(roomId, kind === 'cheer' ? on : null, kind === 'favorite' ? on : null);
+    return roomInteraction(roomId);
+  }
+  return window.radium.stellaSetRoomInteraction(roomId, kind, on);
+}
+
+function renderReceosAccount() {
+  const name = $('receosAccountName');
+  const avatar = $('receosAccountAvatar');
+  const btn = $('receosAccountBtn');
+  const bell = $('receosNotifsBtn');
+  if (!name || !avatar || !btn) return;
+  if (receosPlayer) {
+    const handle = receosPlayer.userName || 'account';
+    const differs = receosPlayer.displayName && receosPlayer.displayName !== handle;
+    name.textContent = receosPlayer.displayName || handle;
+    btn.setAttribute('aria-label', `Signed in to Rec EOS as ${differs ? `${receosPlayer.displayName} (@${handle})` : `@${handle}`}`);
+    avatar.dataset.fallback = placeholderAvatar();
+    avatar.src = receosPlayer.AvatarUrl ? thumbSrc(receosPlayer.AvatarUrl, avatarWidth(28)) : placeholderAvatar();
+    avatar.hidden = false;
+    btn.setAttribute('aria-haspopup', 'menu');
+    $('receosAccountFullName').textContent = `@${handle}`;
+    const display = $('receosAccountDisplay');
+    if (display) {
+      display.textContent = differs ? receosPlayer.displayName : '';
+      display.hidden = !differs;
+    }
+    if (bell) bell.hidden = false;
+  } else {
+    name.textContent = 'LOG IN';
+    btn.setAttribute('aria-label', 'Sign in with your Rec EOS account');
+    avatar.hidden = true;
+    avatar.removeAttribute('src');
+    btn.removeAttribute('aria-haspopup');
+    if (bell) bell.hidden = true;
+    closeReceosAccountMenu();
+  }
+  fitOneAccountName(name, receosPlayer);
+}
+
+function applyReceosAuth(player, { expired = false } = {}) {
+  const was = receosPlayer;
+  receosPlayer = player || null;
+  renderReceosAccount();
+  if (was?.id === receosPlayer?.id) return;
+  resetNotifs(notifSources.receos);
+  receosCursors = null;
+  chatThreads = [];
+  chatOpenId = null;
+  receosFriendsList = [];
+  stellaRequestsById = new Map();
+  if (receosPlayer) {
+    addLog(`Signed in to Rec EOS as @${receosPlayer.userName}`, 'ok', 'account');
+    loadNotifications(notifSources.receos);
+    pollReceos();
+  } else if (was) {
+    addLog(expired ? 'Rec EOS sign-in expired, signed out' : 'Signed out of Rec EOS', 'info', 'account');
+    if (expired) toast('Your Rec EOS sign-in expired. Please sign in again.', 'info');
+  }
+  setChatsBadge(0);
+  refreshStellaFriends();
+  refreshSocialButtons();
+  if (document.querySelector('#tab-chats.active')) loadChatThreads();
+}
+
+async function refreshReceosAuth() {
+  try {
+    const s = await window.radium.receosAuthStatus();
+    if (s?.authenticated) applyReceosAuth(s.player);
+    else if (!s?.hasSession) applyReceosAuth(null, { expired: s?.reason === 'expired' });
+  } catch (e) {}
+}
+
+/// A call answered "Sign in to Rec EOS.": the token is gone (the backend has
+/// already forgotten it).
+function receosSignedOutBy(err) {
+  if (String(err).includes('Sign in to Rec EOS') && receosPlayer) applyReceosAuth(null, { expired: true });
+}
+
+function openReceosLogin() {
+  const modal = $('receosLoginModal');
+  if (!modal) return;
+  $('receosLoginError').hidden = true;
+  $('receosLoginPass').value = '';
+  showModal(modal);
+  setTimeout(() => ($('receosLoginUser').value ? $('receosLoginPass') : $('receosLoginUser')).focus(), 50);
+}
+
+function closeReceosLogin() {
+  $('receosLoginPass').value = '';
+  hideModal($('receosLoginModal'));
+}
+
+$('receosLoginForm')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const user = $('receosLoginUser').value.trim();
+  const pass = $('receosLoginPass').value;
+  const err = $('receosLoginError');
+  const submit = $('receosLoginSubmit');
+  if (!user || !pass) return;
+  submit.disabled = true;
+  submit.textContent = 'Signing in…';
+  err.hidden = true;
+  try {
+    const res = await window.radium.receosLogin(user, pass);
+    closeReceosLogin();
+    applyReceosAuth(res.player);
+    toast(`Signed in as @${res.player.userName}.`, 'ok');
+  } catch (e2) {
+    err.textContent = String(e2);
+    err.hidden = false;
+    $('receosLoginPass').select();
+  } finally {
+    submit.disabled = false;
+    submit.textContent = 'Sign in';
+  }
+});
+$('receosLoginCancel')?.addEventListener('click', closeReceosLogin);
+$('receosLoginClose')?.addEventListener('click', closeReceosLogin);
+
+function closeReceosAccountMenu() {
+  const btn = $('receosAccountBtn');
+  hideDropdown($('receosAccountMenu'));
+  if (btn) {
+    btn.setAttribute('aria-expanded', 'false');
+    btn.classList.remove('is-open');
+  }
+}
+
+$('receosAccountBtn')?.addEventListener('click', () => {
+  if (!receosPlayer) {
+    openReceosLogin();
+    return;
+  }
+  const menu = $('receosAccountMenu');
+  if (menu && !menu.hidden) {
+    closeReceosAccountMenu();
+    return;
+  }
+  closeNotifPanel();
+  showDropdown(menu);
+  $('receosAccountBtn').setAttribute('aria-expanded', 'true');
+  $('receosAccountBtn').classList.add('is-open');
+});
+$('receosProfileBtn')?.addEventListener('click', () => {
+  closeReceosAccountMenu();
+  if (receosPlayer?.userName) showCreatorProfile(receosPlayer.userName);
+});
+$('receosLogoutBtn')?.addEventListener('click', async () => {
+  closeReceosAccountMenu();
+  try { await window.radium.receosLogout(); } catch (e) {}
+  applyReceosAuth(null);
+});
+document.addEventListener('click', (e) => {
+  const menu = $('receosAccountMenu');
+  if (menu && !menu.hidden && !menu.contains(e.target) && !$('receosAccountBtn')?.contains(e.target)) closeReceosAccountMenu();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('receosAccountMenu')?.hidden) {
+    closeReceosAccountMenu();
+    $('receosAccountBtn')?.focus();
+  }
+});
+
+// ── Rec EOS JOIN ─────────────────────────────────────────────────────────
+// The game itself does the joining (`+join:<account id>`, the same launch
+// argument Stella's game takes); the mod lets friends into private rooms too.
+
+function joinReceosFriend(friend) {
+  if (activeNetwork !== 'receos' || !friend?.id) return;
+  const name = friend.displayName || friend.userName || 'your friend';
+  launchStellaInto({ id: Number(friend.id), name }, name);
+}
+
+async function joinFromReceosInvite(id, name = null) {
+  if (activeNetwork !== 'receos') {
+    await setNetwork('receos');
+    if (activeNetwork !== 'receos') return;
+  }
+  const friend = receosFriendsList.find(f => Number(f.id) === Number(id));
+  const who = friend?.displayName || friend?.userName || name || 'your friend';
+  launchStellaInto({ id: Number(id), name: who }, who);
+}
+
+// ── Rec EOS chats ────────────────────────────────────────────────────────
+// The game's own chats: what is written here shows up in the game, and the
+// other player's game is told at once (the server pings it to sync). New
+// messages are looked for every 20 seconds while signed in, and pop up like
+// notifications when the chat isn't open in front of the player.
+
+let chatThreads = [];
+let chatOpenId = null;
+let chatMessagesShown = [];
+let chatLoading = false;
+/// `{ message, chat }` cursors for receos_updates; null until the first look.
+let receosCursors = null;
+const CHAT_POLL_MS = 20 * 1000;
+
+function setChatsBadge(n) {
+  const badge = $('chatsBadge');
+  if (!badge) return;
+  badge.hidden = !n;
+  badge.textContent = n > 9 ? '9+' : String(n || '');
+}
+
+function chatName(t) {
+  if (t.name) return t.name;
+  const names = (t.members || []).map(m => m.displayName || m.userName).filter(Boolean);
+  return names.length ? names.join(', ') : 'Chat';
+}
+
+function chatsNote(text) {
+  const el = document.createElement('div');
+  el.className = 'chats-note';
+  el.textContent = text;
+  return el;
+}
+
+async function loadChatThreads() {
+  const list = $('chatThreadList');
+  if (!list || activeNetwork !== 'receos') return;
+  if (!receosPlayer) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'modal-btn modal-btn-primary';
+    btn.textContent = 'LOG IN';
+    btn.addEventListener('click', openReceosLogin);
+    const note = chatsNote('Sign in to Rec EOS to see your chats.');
+    note.append(document.createElement('br'), document.createElement('br'), btn);
+    list.replaceChildren(note);
+    $('chatMessages').replaceChildren();
+    $('chatTitle').textContent = '';
+    $('chatForm').hidden = true;
+    return;
+  }
+  if (!chatThreads.length) list.replaceChildren(chatsNote('Loading…'));
+  try {
+    chatThreads = await window.radium.receosChatThreads();
+  } catch (e) {
+    receosSignedOutBy(e);
+    list.replaceChildren(chatsNote(`Couldn't load your chats: ${e}`));
+    return;
+  }
+  renderChatList();
+  if (chatOpenId && chatThreads.some(t => t.id === chatOpenId)) {
+    // Back on the tab: what came while away.
+    openChat(chatOpenId);
+  } else if (!chatOpenId) {
+    renderChatEmpty();
+  }
+}
+
+function renderChatList() {
+  const list = $('chatThreadList');
+  if (!list) return;
+  // The open chat counts too while the CHATS tab isn't on screen.
+  const shown = !!document.querySelector('#tab-chats.active');
+  setChatsBadge(chatThreads.filter(t => t.unread && !(shown && t.id === chatOpenId)).length);
+  if (!chatThreads.length) {
+    list.replaceChildren(chatsNote('No chats yet. Start one with + New chat.'));
+    return;
+  }
+  list.replaceChildren(...chatThreads.map(t => {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'chat-row';
+    row.setAttribute('role', 'listitem');
+    row.classList.toggle('is-open', t.id === chatOpenId);
+    row.classList.toggle('is-unread', !!t.unread && !(shown && t.id === chatOpenId));
+    const img = document.createElement('img');
+    img.alt = '';
+    img.dataset.fallback = placeholderAvatar();
+    const pic = t.members?.[0]?.AvatarUrl;
+    img.src = pic ? thumbSrc(pic, avatarWidth(34)) : placeholderAvatar();
+    const text = document.createElement('span');
+    text.className = 'chat-row-text';
+    text.append(friendSpan('chat-row-name', chatName(t)));
+    const last = t.latest;
+    text.append(friendSpan('chat-row-last', last ? `${Number(last.senderId) === Number(receosPlayer?.id) ? 'You: ' : ''}${last.text}` : ''));
+    row.append(img, text);
+    row.addEventListener('click', () => openChat(t.id));
+    return row;
+  }));
+}
+
+function renderChatEmpty() {
+  $('chatTitle').textContent = '';
+  $('chatForm').hidden = true;
+  $('chatMessages').replaceChildren(chatsNote(chatThreads.length ? 'Pick a chat.' : 'Your Rec EOS chats show up here.'));
+}
+
+function chatMessageEl(m) {
+  const mine = Number(m.senderId) === Number(receosPlayer?.id);
+  const el = document.createElement('div');
+  el.className = 'chat-msg';
+  el.classList.toggle('is-mine', mine);
+  el.classList.toggle('is-other-kind', m.isText === false);
+  el.append(friendSpan('chat-msg-bubble', m.text));
+  const t = Date.parse(m.sentTime || '');
+  const when = isNaN(t) ? '' : new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const who = mine ? '' : (m.senderDisplay || m.senderName || '');
+  el.append(friendSpan('chat-msg-meta', [who, when].filter(Boolean).join(' · ')));
+  return el;
+}
+
+function renderChatMessages({ keepScroll = false } = {}) {
+  const box = $('chatMessages');
+  if (!box) return;
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  box.replaceChildren(...(chatMessagesShown.length ? chatMessagesShown.map(chatMessageEl) : [chatsNote('No messages yet. Say hi!')]));
+  if (!keepScroll || atBottom) box.scrollTop = box.scrollHeight;
+}
+
+async function openChat(threadId) {
+  chatOpenId = threadId;
+  const t = chatThreads.find(x => x.id === threadId);
+  $('chatTitle').textContent = t ? chatName(t) : 'Chat';
+  $('chatForm').hidden = false;
+  renderChatList();
+  $('chatMessages').replaceChildren(chatsNote('Loading…'));
+  try {
+    const msgs = await window.radium.receosChatMessages(threadId);
+    if (chatOpenId !== threadId) return;
+    chatMessagesShown = msgs;
+  } catch (e) {
+    receosSignedOutBy(e);
+    $('chatMessages').replaceChildren(chatsNote(`Couldn't load this chat: ${e}`));
+    return;
+  }
+  renderChatMessages();
+  markChatRead(threadId);
+  $('chatInput')?.focus();
+}
+
+function markChatRead(threadId) {
+  const last = chatMessagesShown[chatMessagesShown.length - 1];
+  const t = chatThreads.find(x => x.id === threadId);
+  if (t) t.unread = false;
+  renderChatList();
+  if (last?.id) window.radium.receosChatRead(threadId, last.id).catch(() => {});
+}
+
+$('chatForm')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const input = $('chatInput');
+  const text = input.value.trim();
+  if (!text || !chatOpenId) return;
+  const threadId = chatOpenId;
+  $('chatSend').disabled = true;
+  try {
+    const sent = await window.radium.receosChatSend(threadId, text);
+    input.value = '';
+    if (chatOpenId === threadId) {
+      chatMessagesShown.push({ ...sent, senderId: receosPlayer?.id });
+      renderChatMessages();
+    }
+    const t = chatThreads.find(x => x.id === threadId);
+    if (t) {
+      t.latest = { ...sent, senderId: receosPlayer?.id };
+      chatThreads = [t, ...chatThreads.filter(x => x !== t)];
+      renderChatList();
+    }
+  } catch (err) {
+    receosSignedOutBy(err);
+    toast(`Couldn't send: ${err}`, 'error');
+  } finally {
+    $('chatSend').disabled = false;
+    input.focus();
+  }
+});
+
+/// + New chat: pick a friend; their chat opens (made if there is none).
+$('btnNewChat')?.addEventListener('click', async () => {
+  if (!requireSocialLogin('chat')) return;
+  chatOpenId = null;
+  chatMessagesShown = [];
+  renderChatList();
+  $('chatTitle').textContent = 'New chat';
+  $('chatForm').hidden = true;
+  const box = $('chatMessages');
+  box.replaceChildren(chatsNote('Loading your friends…'));
+  if (!receosFriendsList.length) {
+    try {
+      const res = await window.radium.receosFriends();
+      if (res?.success) receosFriendsList = res.friends || [];
+    } catch (e) {}
+  }
+  if (!receosFriendsList.length) {
+    box.replaceChildren(chatsNote('Add friends in the game to chat with them here.'));
+    return;
+  }
+  const pick = document.createElement('div');
+  pick.className = 'chats-friend-pick';
+  pick.append(...receosFriendsList.map(f => {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'chat-row';
+    const img = document.createElement('img');
+    img.alt = '';
+    img.dataset.fallback = placeholderAvatar();
+    img.src = f.AvatarUrl ? thumbSrc(f.AvatarUrl, avatarWidth(34)) : placeholderAvatar();
+    const text = document.createElement('span');
+    text.className = 'chat-row-text';
+    text.append(friendSpan('chat-row-name', f.displayName || f.userName), friendSpan('chat-row-last', `@${f.userName}`));
+    row.append(img, text);
+    row.addEventListener('click', () => startChatWith(f));
+    return row;
+  }));
+  box.replaceChildren(pick);
+});
+
+async function startChatWith(friend) {
+  try {
+    const t = await window.radium.receosChatOpen([friend.id]);
+    if (!chatThreads.some(x => x.id === t.id)) chatThreads = [t, ...chatThreads];
+    if (!document.querySelector('#tab-chats.active')) switchTab('chats');
+    openChat(t.id);
+  } catch (e) {
+    receosSignedOutBy(e);
+    toast(`Couldn't open a chat with ${friend.displayName || friend.userName}: ${e}`, 'error');
+  }
+}
+
+async function openChatFromPopup(threadId) {
+  if (activeNetwork !== 'receos') {
+    await setNetwork('receos');
+    if (activeNetwork !== 'receos') return;
+  }
+  switchTab('chats');
+  if (!chatThreads.some(t => t.id === threadId)) await loadChatThreads();
+  openChat(threadId);
+}
+
+/// New chat messages (and anything else new) since the last look.
+async function pollReceos() {
+  if (!receosPlayer) return;
+  let res;
+  try {
+    res = await window.radium.receosUpdates(null, receosCursors ? receosCursors.chat : null);
+  } catch (e) {
+    receosSignedOutBy(e);
+    return;
+  }
+  const first = !receosCursors;
+  receosCursors = { chat: res.chatCursor };
+  if (first || !res.chat?.length) return;
+  const chatTabOpen = document.querySelector('#tab-chats.active') && activeNetwork === 'receos';
+  const looking = chatTabOpen && document.hasFocus();
+  for (const m of res.chat) {
+    if (looking && m.threadId === chatOpenId) {
+      chatMessagesShown.push(m);
+    }
+  }
+  if (looking && res.chat.some(m => m.threadId === chatOpenId)) {
+    renderChatMessages({ keepScroll: true });
+    markChatRead(chatOpenId);
+  }
+  // The chat list, with its unread marks.
+  if (activeNetwork === 'receos') {
+    try { chatThreads = await window.radium.receosChatThreads(); } catch (e) {}
+    if (chatOpenId && looking) {
+      const t = chatThreads.find(x => x.id === chatOpenId);
+      if (t) t.unread = false;
+    }
+    renderChatList();
+  }
+  // Pop-ups for what the player isn't looking at.
+  const unseen = res.chat.filter(m => !(looking && m.threadId === chatOpenId));
+  const prefs = notifPrefs();
+  if (unseen.length && prefs.popups && !isGameRunning) {
+    const style = notifPopStyle();
+    window.radium.desktopNotify(unseen.slice(-3).map(m => {
+      const friend = receosFriendsList.find(f => Number(f.id) === Number(m.senderId));
+      return {
+        id: `receos-chat:${m.threadId}`,
+        sender: null,
+        icon: null,
+        avatar: friend?.AvatarUrl ? thumbSrc(friend.AvatarUrl, avatarWidth(40)) : placeholderAvatar(),
+        app: 'Rec EOS',
+        parts: [{ t: m.senderDisplay || m.senderName || 'A player', b: true }, { t: `: ${m.text}` }],
+        style,
+      };
+    })).catch(() => {});
+    if (prefs.sound) playNotifChime();
+  }
+  addLog(`${res.chat.length} new chat message${res.chat.length === 1 ? '' : 's'} on Rec EOS.`, 'info', 'account');
+}
+
+setInterval(() => {
+  if (!receosPlayer) return;
+  if (document.hidden && !notifPrefs().popups) return;
+  pollReceos();
+}, CHAT_POLL_MS);
+
+// Whoever is signed in, from the last run.
+setTimeout(refreshReceosAuth, 0);
+
 
 // ── Vanilla notifications ────────────────────────────────────────────────
 // A panel off the bell next to the account button, laid out like the one on
@@ -7578,6 +8254,12 @@ const notifSources = {
     bell: 'stellaNotifsBtn', badge: 'stellaNotifBadge',
     player: () => stellaPlayer,
     fetch: () => window.radium.stellaNotifications(),
+  },
+  receos: {
+    net: 'receos', label: 'Rec EOS', items: [], loading: false, announced: null,
+    bell: 'receosNotifsBtn', badge: 'receosNotifBadge',
+    player: () => receosPlayer,
+    fetch: () => window.radium.receosNotifications(),
   },
 };
 /// The list the panel shows: the bell that last opened it.
@@ -7713,7 +8395,7 @@ function notifParts(n, net) {
   const invite = n.type === 6 && n.message;
   const template = invite ? '{s} invited you to join them in {m}.'
     // Stella's friend requests are accepted here (ACCEPT on the row).
-    : n.type === 4 && net === 'stella' ? '{s} sent you a friend request.'
+    : n.type === 4 && (net === 'stella' || net === 'receos') ? '{s} sent you a friend request.'
     : VANILLA_NOTIF_TEXT[n.type] || 'New notification from {s}.';
   return template.split(/(\{s\}|\{m\})/).filter(Boolean).map(part =>
     part === '{s}' ? { t: n.senderDisplay || n.senderName || 'A player', b: true }
@@ -7751,13 +8433,15 @@ function notifAvatar(n, size) {
   img.loading = 'lazy';
   // A picture that fails to load gets the placeholder, as every other avatar
   // does, rather than the webview's broken-image mark.
-  img.dataset.fallback = PLACEHOLDER_AVATAR;
-  img.src = n.senderAvatar ? thumbSrc(n.senderAvatar, avatarWidth(size)) : PLACEHOLDER_AVATAR;
+  img.dataset.fallback = placeholderAvatar();
+  img.src = n.senderAvatar ? thumbSrc(n.senderAvatar, avatarWidth(size)) : placeholderAvatar();
   return img;
 }
 
 /// A Stella invite that can still be used: JOIN on it starts Stella there.
 function joinableStellaInvite(src, n) {
+  // Rec EOS: the game decides at the door, so any invite offers JOIN.
+  if (src.net === 'receos') return n.type === 6 && !!n.senderId;
   return src.net === 'stella' && n.type === 6 && n.senderId && stellaInvitedBy(n.senderId);
 }
 
@@ -7777,7 +8461,8 @@ function notifBody(n, net) {
 
 /// A Stella friend request still waiting for an answer: ACCEPT on it.
 function acceptableStellaRequest(src, n) {
-  return src.net === 'stella' && n.type === 4 && n.senderId ? stellaRequestsById.get(Number(n.senderId)) : null;
+  return (src.net === 'stella' || src.net === 'receos') && src.net === activeNetwork && n.type === 4 && n.senderId
+    ? stellaRequestsById.get(Number(n.senderId)) : null;
 }
 
 function notifRow(src, n, unread) {
@@ -7824,7 +8509,8 @@ function notifRow(src, n, unread) {
     row.setAttribute('aria-label', `Join ${n.senderDisplay || n.senderName || 'them'} in ${stellaRoomLabel(n.message)}`);
     row.addEventListener('click', () => {
       closeNotifPanel();
-      joinFromStellaInvite(n.senderId);
+      if (src.net === 'receos') joinFromReceosInvite(n.senderId, n.senderDisplay || n.senderName);
+      else joinFromStellaInvite(n.senderId);
     });
   } else if (n.senderName) {
     row.addEventListener('click', () => {
@@ -7898,6 +8584,7 @@ function positionNotifPanel() {
 function openNotifPanel(src = panelSource) {
   closeAccountMenu();
   closeStellaAccountMenu();
+  closeReceosAccountMenu();
   if (panelSource !== src) closeNotifPanel();
   panelSource = src;
   const panel = $('vanillaNotifsPanel');
@@ -8017,6 +8704,14 @@ function deliverNotifPops(src, list, { force = false } = {}) {
 /// A card for the desktop pop-up: plain data, rendered there as text. Its id
 /// says whose notification it is (`notif:<network>:<id>`), for when it's clicked.
 function desktopCard(src, it, style) {
+  // A Rec EOS game invite pops up with its JOIN.
+  if (src.net === 'receos' && it.type === 6 && it.senderId) {
+    return {
+      id: `receos-invite:${it.senderId}`, sender: null, icon: null,
+      avatar: it.senderAvatar ? thumbSrc(it.senderAvatar, avatarWidth(40)) : placeholderAvatar(),
+      app: src.label, parts: notifParts(it, src.net), action: 'JOIN', style,
+    };
+  }
   if (it.more) {
     return { id: null, sender: null, icon: 'bell', app: src.label, style,
              parts: [{ t: `${it.more} more new notifications` }] };
@@ -8030,7 +8725,7 @@ function desktopCard(src, it, style) {
     // Always the account's network, whichever is showing, so never Radium's
     // default picture; the placeholder rather than nothing, which the pop-up
     // used to fill with the Radium logo.
-    avatar: system ? '' : (n.senderAvatar ? thumbSrc(n.senderAvatar, avatarWidth(40)) : PLACEHOLDER_AVATAR),
+    avatar: system ? '' : (n.senderAvatar ? thumbSrc(n.senderAvatar, avatarWidth(40)) : placeholderAvatar()),
     app: src.label,
     parts: notifParts(n, src.net),
     style,
@@ -8126,7 +8821,17 @@ window.radium?.onDesktopNotifOpen?.(async (card) => {
     joinFromStellaInvite(invite[1]);
     return;
   }
-  const own = /^notif:(vanilla|stella):(.+)$/.exec(String(card?.id ?? ''));
+  const receosInvite = /^receos-invite:(\d+)$/.exec(String(card?.id ?? ''));
+  if (receosInvite) {
+    joinFromReceosInvite(receosInvite[1]);
+    return;
+  }
+  const chat = /^receos-chat:(\d+)$/.exec(String(card?.id ?? ''));
+  if (chat) {
+    openChatFromPopup(Number(chat[1]));
+    return;
+  }
+  const own = /^notif:(vanilla|stella|receos):(.+)$/.exec(String(card?.id ?? ''));
   // The pop-up hands back only the id and sender, so an id-less card ("N
   // more") is taken as Vanilla's.
   const src = notifSources[own?.[1] || 'vanilla'];
@@ -8258,7 +8963,7 @@ function bumpCount(el, delta) {
 async function paintRoomCheer(room) {
   const btn = $('roomsDetailCheerBtn');
   const fav = $('roomsDetailFavoriteBtn');
-  const stella = activeNetwork === 'stella';
+  const stella = stellaLike();
   setCheerEnabled(btn, !!room);
   setCheerPressed(btn, false);
   // Favorite is Stella's only; there it takes the cheer tile's look too.
@@ -8267,9 +8972,9 @@ async function paintRoomCheer(room) {
   setCheerPressed(fav, false);
   if (!btn || !room) return;
   if (stella) {
-    if (!stellaPlayer) return;
+    if (!socialPlayer()) return;
     try {
-      const state = await window.radium.stellaRoomInteraction(room.RoomId);
+      const state = await roomInteraction(room.RoomId);
       if (socialRoom === room) {
         setCheerPressed(btn, !!state.cheered);
         setCheerPressed(fav, !!state.favorited);
@@ -8289,13 +8994,13 @@ async function paintRoomCheer(room) {
 async function toggleStellaRoom(btn, kind, countEl) {
   const room = socialRoom;
   if (!room || btn.dataset.pending === 'true') return;
-  if (!requireStellaLogin(kind === 'cheer' ? 'cheer rooms' : 'favorite rooms')) return;
+  if (!requireSocialLogin(kind === 'cheer' ? 'cheer rooms' : 'favorite rooms')) return;
   const next = btn.getAttribute('aria-pressed') !== 'true';
   btn.dataset.pending = 'true';
   setCheerPressed(btn, next);
   bumpCount(countEl, next ? 1 : -1);
   try {
-    const state = await window.radium.stellaSetRoomInteraction(room.RoomId, kind, next);
+    const state = await setRoomInteraction(room.RoomId, kind, next);
     const now = kind === 'cheer' ? !!state.cheered : !!state.favorited;
     // Stella's answer is the truth; it can differ if the tile was stale.
     if (socialRoom === room && now !== next) {
@@ -8314,13 +9019,13 @@ async function toggleStellaRoom(btn, kind, countEl) {
 }
 
 $('roomsDetailFavoriteBtn')?.addEventListener('click', (e) => {
-  if (activeNetwork !== 'stella') return;
+  if (!stellaLike()) return;
   toggleStellaRoom(e.currentTarget, 'favorite', $('roomsDetailFavorites'));
 });
 
 $('roomsDetailCheerBtn')?.addEventListener('click', async (e) => {
   const btn = e.currentTarget;
-  if (activeNetwork === 'stella') {
+  if (stellaLike()) {
     toggleStellaRoom(btn, 'cheer', $('roomsDetailCheers'));
     return;
   }
@@ -8686,7 +9391,7 @@ async function playRoom(room) {
 $('roomsDetailPlay')?.addEventListener('click', () => {
   const room = socialRoom;
   if (!room || !room.RoomId) return;
-  if (activeNetwork === 'stella') {
+  if (stellaLike()) {
     playStellaRoom(room);
     return;
   }
@@ -8706,7 +9411,7 @@ $('roomsDetailPlay')?.addEventListener('click', () => {
 // Entry points from the detail views ────────────────────────────────────
 
 function setupRoomSocial(room) {
-  socialRoom = (activeNetwork === 'vanilla' || activeNetwork === 'stella') && room?.RoomId ? room : null;
+  socialRoom = (activeNetwork === 'vanilla' || stellaLike()) && room?.RoomId ? room : null;
   paintPlayButton();
   paintRoomCheer(socialRoom);
 }
@@ -8950,7 +9655,7 @@ enhanceSelects();
 // ── end custom selects ──
 
 async function init() {
-  addLog('Radium Launcher started.', 'ok');
+  addLog('Rec EOS Launcher started.', 'ok');
   await loadVersion();
   await loadConfig();
 
@@ -9223,7 +9928,7 @@ function buildRoomCard(room, { width = 560, onOpen, scrapeMissing = false } = {}
     </div>
     <div class="room-card-foot">
       ${creatorUsername ? `<button type="button" class="room-card-creator" tabindex="-1">
-        <img class="room-card-avatar image-loading-placeholder" loading="lazy" decoding="async" data-fallback="${escapeHtml(PLACEHOLDER_AVATAR)}" src="${escapeHtml(avatar)}" alt="" />
+        <img class="room-card-avatar image-loading-placeholder" loading="lazy" decoding="async" data-fallback="${escapeHtml(placeholderAvatar())}" src="${escapeHtml(avatar)}" alt="" />
         <span class="room-card-creator-name">${escapeHtml(creatorUsername)}</span>
       </button>` : '<span class="room-card-creator is-unknown">Unknown creator</span>'}
       <span class="room-card-cheers" role="img"${cheers == null ? ' hidden' : ''}><span class="vn-icon vn-icon-thumb" aria-hidden="true"></span><span class="room-card-cheers-n"></span></span>
@@ -10515,7 +11220,7 @@ async function showPhotoDetails(photo, backToView) {
     // Re-armed on every visit: the shared handler consumes `data-fallback` the
     // first time an image fails, so a panel opened twice would otherwise have
     // no fallback left the second time.
-    creatorAvatarEl.dataset.fallback = PLACEHOLDER_AVATAR;
+    creatorAvatarEl.dataset.fallback = placeholderAvatar();
     creatorAvatarEl.src = defaultAvatarUrl(32);
   }
   const roomLinkEl = $('photoDetailRoomLink');
@@ -10546,7 +11251,7 @@ async function showPhotoDetails(photo, backToView) {
       if (seq !== photoDetailSeq) return;
       if (avatarSrc && creatorAvatarEl) {
         creatorAvatarEl.classList.add('image-loading-placeholder');
-        creatorAvatarEl.dataset.fallback = PLACEHOLDER_AVATAR;
+        creatorAvatarEl.dataset.fallback = placeholderAvatar();
         creatorAvatarEl.src = thumbSrc(avatarSrc, avatarWidth(32));
       } else if (creatorAvatarEl) {
         creatorAvatarEl.classList.remove('image-loading-placeholder');
@@ -10700,7 +11405,7 @@ async function showRoomDetails(room) {
     creatorAvatarEl.classList.add('image-loading-placeholder');
     // Re-armed on every visit, as on the photo screen: the shared handler
     // uses the fallback up the first time a picture fails.
-    creatorAvatarEl.dataset.fallback = PLACEHOLDER_AVATAR;
+    creatorAvatarEl.dataset.fallback = placeholderAvatar();
     // A row that resolved its creator (Stella, Vanilla) carries the picture
     // already. Stella has no room page to look it up from below, so without
     // this it would stay on the placeholder.
@@ -10754,7 +11459,7 @@ async function showRoomDetails(room) {
     if (descEl && webDetails.description) descEl.textContent = webDetails.description;
     if (webDetails.creatorAvatar && creatorAvatarEl) {
       creatorAvatarEl.classList.add('image-loading-placeholder');
-      creatorAvatarEl.dataset.fallback = PLACEHOLDER_AVATAR;
+      creatorAvatarEl.dataset.fallback = placeholderAvatar();
       creatorAvatarEl.src = thumbSrc(webDetails.creatorAvatar, avatarWidth(32));
     } else if (creatorAvatarEl) {
       creatorAvatarEl.classList.remove('image-loading-placeholder');
@@ -10800,7 +11505,7 @@ async function showPlayerDetails(person) {
     avatarEl.classList.add('image-loading-placeholder');
     avatarEl.onload = () => { avatarEl.classList.remove('image-loading-placeholder'); avatarEl.onload = null; };
     avatarEl.src = avatarUrl;
-    avatarEl.onerror = () => { avatarEl.src = PLACEHOLDER_AVATAR; avatarEl.classList.remove('image-loading-placeholder'); avatarEl.onerror = null; };
+    avatarEl.onerror = () => { avatarEl.src = placeholderAvatar(); avatarEl.classList.remove('image-loading-placeholder'); avatarEl.onerror = null; };
     avatarEl.style.cursor = 'pointer';
     avatarEl.onclick = () => {
       // Proxied for the same reason as the photo lightbox above. 512 is well
@@ -10839,7 +11544,7 @@ async function showPlayerDetails(person) {
   // Only Radium publishes friends and visit counts. Vanilla and Stella expose
   // a subscriber count and nothing else, so those tiles stay hidden rather than
   // flashing "..." and then vanishing.
-  const hasFriendsStat = activeNetwork === 'radium';
+  const hasFriendsStat = activeNetwork === 'radium' || activeNetwork === 'receos';
   const hasVisitsStat  = activeNetwork === 'radium';
   setProfileStat(friendsEl, hasFriendsStat ? '...' : '');
   setProfileStat(subsEl, '...');
@@ -10906,7 +11611,9 @@ async function showPlayerDetails(person) {
   // Load scraped web details asynchronously
   let webDetails = null;
   try {
-    webDetails = await getUserWebDetails(person.userName, person.id);
+    // An account id is a number; Rec EOS players' ids are their usernames.
+    const accountId = person.id != null && person.id !== '' && Number.isFinite(Number(person.id)) ? Number(person.id) : null;
+    webDetails = await getUserWebDetails(person.userName, accountId);
   } catch (err) {
     console.error("Error loading web details for user:", err);
   }

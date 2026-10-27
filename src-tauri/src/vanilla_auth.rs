@@ -717,7 +717,7 @@ pub async fn vanilla_current_room(app: AppHandle) -> Result<Value, String> {
 // ── At-rest storage ──────────────────────────────────────────────────────
 
 #[cfg(windows)]
-mod store {
+pub(crate) mod store {
     use super::DPAPI_ENTROPY;
     use std::path::Path;
     use windows_sys::Win32::Foundation::LocalFree;
@@ -798,7 +798,7 @@ mod store {
 /// No OS-backed encryption is wired up off Windows, so the session is kept in
 /// memory only and the user signs in again each launch.
 #[cfg(not(windows))]
-mod store {
+pub(crate) mod store {
     use std::path::Path;
     use zeroize::Zeroizing;
 

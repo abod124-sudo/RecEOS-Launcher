@@ -94,6 +94,7 @@ fn network_label(network: config::Network) -> &'static str {
         config::Network::Radium => "Radium",
         config::Network::Vanilla => "Vanilla",
         config::Network::Stella => "Stella",
+        config::Network::RecEos => "Rec EOS",
     }
 }
 
@@ -355,7 +356,7 @@ impl Facts {
     /// when it is read outside Discord.
     fn log_header(&self, reference: &str, category: &str, severity: &str) -> String {
         format!(
-            "===== RADIUM LAUNCHER — BUG REPORT {reference} =====\r\n\
+            "===== REC EOS LAUNCHER — BUG REPORT {reference} =====\r\n\
              Problem  : {category} ({severity})\r\n\
              Launcher : {} on {}\r\n\
              Network  : {}\r\n\
@@ -584,7 +585,7 @@ async fn send(app: tauri::AppHandle, report: Report) -> Result<Sent, String> {
             "description": description,
             "color": color,
             "fields": fields,
-            "footer": { "text": format!("Radium Launcher {}", facts.launcher_version) }
+            "footer": { "text": format!("Rec EOS Launcher {}", facts.launcher_version) }
         }]
     });
 
