@@ -104,7 +104,10 @@ fn zip_stem(network: Network) -> &'static str {
 pub(crate) fn download_user_agent(network: Network) -> &'static str {
     match network {
         Network::Stella => crate::stella::USER_AGENT,
-        Network::Radium | Network::Vanilla | Network::RecEos => BROWSER_UA,
+        // MediaFire's Cloudflare turns away requests that claim to be a
+        // browser but don't look like one; the launcher's own name is let in.
+        Network::RecEos => crate::receos::USER_AGENT,
+        Network::Radium | Network::Vanilla => BROWSER_UA,
     }
 }
 
