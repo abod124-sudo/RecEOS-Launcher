@@ -246,6 +246,7 @@ button {
   background-position: center top;
 }
 [data-network="stella"] > .hero-art { background-image: url('assets/stella-pattern.jpg'); }
+[data-network="receos"] > .hero-art { background-color: #2f87d8; background-image: url('assets/receos-pattern.jpg'); }
 /* The user's own banner (Settings → Home), with a shade so the brand, which
    turns white over it, reads on any picture. */
 .hero.has-banner > .hero-art { background: var(--tm-banner) center / cover no-repeat; }
@@ -306,6 +307,15 @@ button {
   filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.45));
 }
 [data-network="stella"] > .hero-brand > .hero-name { color: #ffffff; text-shadow: 0 2px 10px rgba(0, 0, 0, 0.45); }
+[data-network="receos"] > .hero-brand > .hero-mark {
+  width: 38px;
+  height: 38px;
+  background-color: #ffffff;
+  -webkit-mask: url('assets/receos-icon.png') center / contain no-repeat;
+          mask: url('assets/receos-icon.png') center / contain no-repeat;
+  filter: drop-shadow(0 3px 10px rgba(0, 0, 0, 0.35));
+}
+[data-network="receos"] > .hero-brand > .hero-name { color: #ffffff; text-shadow: 0 2px 10px rgba(0, 0, 0, 0.35); }
 .hero.has-banner:not([data-network="stella"]) > .hero-brand > .hero-mark { background-color: #ffffff; filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.5)); }
 .hero.has-banner > .hero-brand > .hero-name { color: #ffffff; text-shadow: 0 2px 10px rgba(0, 0, 0, 0.55); }
 
@@ -1073,3 +1083,18 @@ body[data-icons="aqua"] {
 .glass.motion .btn-pri:hover { transform: translateY(-1px); }
 .glass.motion .btn-pri:active { transform: scale(0.97); }
 .glass .avatar .dot { box-shadow: 0 0 0 2px rgba(20, 20, 24, 0.85); }
+
+/* Rec EOS chats: friend rows with the last message under the name, which
+   cuts off with an ellipsis, and a dot on the right for an unread one. */
+.chat .friend-text { flex: 1 1 auto; }
+.chat .friend-where { display: block; }
+.chat.is-unread .friend-name { font-weight: 700; }
+.chat.is-unread .friend-where { color: var(--tm-fg); }
+.chat-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--sk-pri-bg, #2f87d8);
+}

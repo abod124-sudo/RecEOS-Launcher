@@ -1397,6 +1397,13 @@ body.theme-moderndark .btn-download-big {
      `inherit` rather than a number, so the retro skins (radius 0) and the
      modern ones both stay right. */
   border-radius: inherit;
+  /* The art and the action bar's scrim each round their own corners, and
+     where both soften the curve a thread of the bright art came through at
+     the bottom-left and bottom-right (green on Radium, blue on Rec EOS). The
+     art fades out over its last 36px, which the bar already covers fully, so
+     the corners can only show the hero's black backing. */
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 36px), transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 36px), transparent 100%);
 }
 /* The brand, left of centre in the space above the action bar. */
 .home-hero-brand {

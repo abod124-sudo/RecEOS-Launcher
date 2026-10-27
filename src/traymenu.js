@@ -140,10 +140,13 @@
 
   /// A picture the launcher named: only ever one of its own, or one through
   /// its thumbnail cache (which is all the window's CSP would load anyway).
-  function picture(src) {
+  /// A player without a picture: Rec EOS's logo there, as in the launcher.
+  const placeholder = (network) => (network === 'receos' ? 'assets/receos-icon.png' : 'assets/default-avatar.png');
+
+  function picture(src, network) {
     const ok = typeof src === 'string'
       && /^(?:https?:\/\/radiumimg\.localhost\/|radiumimg:\/\/)/.test(src) && src.length < 4000;
-    return ok ? src : 'assets/default-avatar.png';
+    return ok ? src : placeholder(network);
   }
 
   // ── The panel ──────────────────────────────────────────────────────────
@@ -248,7 +251,7 @@
   /// Stella's friends: up to three, online first, each with JOIN while they
   /// can be joined. Always as tall as three rows, so the panel doesn't change
   /// height as the list loads or friends come and go.
-  function friends(info, own) {
+  function friends(info, own, network) {
     const data = own && info.friends && typeof info.friends === 'object' ? info.friends : { note: '' };
     const rows = Array.isArray(data.rows) ? data.rows.slice(0, 3) : [];
     const list = rows.length
@@ -258,7 +261,7 @@
           return h('div', { class: `friend is-${status}`, 'data-key': `friend:${id}` },
             h('button', { class: 'friend-main', type: 'button', 'data-id': `friend:${id}` },
               h('span', { class: 'avatar' },
-                h('img', { src: picture(f.avatar), alt: '', draggable: 'false' }),
+                h('img', { src: picture(f.avatar, network), alt: '', draggable: 'false' }),
                 h('span', { class: 'dot' })),
               h('span', { class: 'friend-text' },
                 h('span', { class: 'friend-name' }, String(f.name || 'Player'),
@@ -277,6 +280,30 @@
         h('span', { class: 'sec-title' }, 'Friends'),
         h('button', { class: 'sec-link', type: 'button', 'data-id': 'friends' },
           data.summary ? String(data.summary) : 'All friends', icon('chevron'))),
+      h('div', { class: 'friend-list' }, list));
+  }
+
+  /// Rec EOS chats: the newest three, a dot on the unread ones.
+  function chats(info) {
+    const data = info.chats && typeof info.chats === 'object' ? info.chats : { note: '' };
+    const rows = Array.isArray(data.rows) ? data.rows.slice(0, 3) : [];
+    const list = rows.length
+      ? rows.map((c) => {
+          const id = String(c.id || '');
+          return h('div', { class: `friend chat${c.unread ? ' is-unread' : ''}`, 'data-key': `chat:${id}` },
+            h('button', { class: 'friend-main', type: 'button', 'data-id': `chat:${id}` },
+              h('span', { class: 'avatar' }, h('img', { src: picture(c.avatar, 'receos'), alt: '', draggable: 'false' })),
+              h('span', { class: 'friend-text' },
+                h('span', { class: 'friend-name' }, String(c.name || 'Chat')),
+                h('span', { class: 'friend-where' }, String(c.last || ''))),
+              c.unread ? h('span', { class: 'chat-dot', 'aria-label': 'Unread', role: 'img' }) : null));
+        })
+      : [h('div', { class: 'friends-note' }, String(data.note || ''))];
+    return h('section', { class: 'friends chats', 'data-key': 'chats', 'aria-label': 'Chats' },
+      h('div', { class: 'sec-head' },
+        h('span', { class: 'sec-title' }, 'Chats'),
+        h('button', { class: 'sec-link', type: 'button', 'data-id': 'tab:chats' },
+          String(data.summary || 'All chats'), icon('chevron'))),
       h('div', { class: 'friend-list' }, list));
   }
 
@@ -332,12 +359,15 @@
     const info = state.info && typeof state.info === 'object' ? state.info : {};
     // Whether Stella shows friends at all is Settings' call (Friends: Hidden),
     // and is known whichever network is on.
-    const showFriends = active === 'stella' && (own ? !!info.friends : info.stellaFriends !== false);
+    const showFriends = (active === 'stella' || active === 'receos') && (own ? !!info.friends : info.stellaFriends !== false);
     const popupsOn = own ? info.popups : true;
     return [
       hero(active, info, own),
       primary(active, info, own),
-      ...(showFriends ? [sep('friends'), friends(info, own)] : []),
+      ...(showFriends ? [sep('friends'), friends(info, own, active)] : []),
+      // Chats are sent whichever network is on (trayChats in app.js), so a
+      // switch to Rec EOS draws them at once instead of growing them in late.
+      ...(active === 'receos' && info.chats ? [sep('chats'), chats(info)] : []),
       sep('tiles'),
       tiles(active),
       sep('networks'),
@@ -638,7 +668,7 @@
   /// later, then only fills in; and a switch it refuses puts the old one back.
   function foresee(state, network) {
     const info = state.info && typeof state.info === 'object' ? state.info : {};
-    const friends = network === 'stella' && info.stellaFriends !== false ? { note: 'Loading friends…' } : null;
+    const friends = (network === 'stella' || network === 'receos') && info.stellaFriends !== false ? { note: 'Loading friends…' } : null;
     return { ...state, network, info: { ...info, server: 'checking', players: {}, friends } };
   }
 
@@ -868,8 +898,11 @@
   // A friend's picture that didn't load shows the default one.
   document.addEventListener('error', (e) => {
     const img = e.target;
-    if (img?.tagName === 'IMG' && img.closest('.avatar') && !img.src.endsWith('assets/default-avatar.png')) {
-      img.src = 'assets/default-avatar.png';
+    const network = img?.closest?.('[data-network]')?.dataset.network
+      || (img?.closest?.('.chats') ? 'receos' : menu.querySelector(':scope > .hero')?.dataset.network);
+    const fallback = placeholder(network);
+    if (img?.tagName === 'IMG' && img.closest('.avatar') && !img.src.endsWith(fallback)) {
+      img.src = fallback;
     }
   }, true);
 

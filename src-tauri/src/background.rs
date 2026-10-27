@@ -506,6 +506,9 @@ fn on_menu(app: &AppHandle, id: &str) {
             } else if let Some(friend) = id.strip_prefix("friend:") {
                 show_main(app);
                 action("friend", friend);
+            } else if let Some(thread) = id.strip_prefix("chat:") {
+                show_main(app);
+                action("chat", thread);
             } else if let Some(friend) = id.strip_prefix("join:") {
                 // Like Play: the page brings the window up only if the join
                 // needs the user.

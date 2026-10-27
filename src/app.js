@@ -2021,7 +2021,8 @@ function syncLaunchOptionLabel() {
 
 // ── Settings sections ───────────────────────────────────────────────────
 // One section at a time, picked from the list at the left. Notifications
-// (Vanilla and Stella, the networks with accounts) and Friends (Stella) exist
+// (Vanilla, Stella and Rec EOS, the networks with accounts) and Friends
+// (Stella and Rec EOS) exist
 // on those networks only; on another one the section falls back to General.
 
 let settingsSection = 'general';
@@ -2029,7 +2030,8 @@ let settingsSection = 'general';
 function settingsSectionAvailable(btn) {
   if (btn.classList.contains('network-only-vanilla')) return activeNetwork === 'vanilla';
   if (btn.classList.contains('network-only-stella')) return activeNetwork === 'stella';
-  if (btn.classList.contains('network-only-accounts')) return activeNetwork === 'vanilla' || activeNetwork === 'stella';
+  if (btn.classList.contains('network-only-accounts')) return ['vanilla', 'stella', 'receos'].includes(activeNetwork);
+  if (btn.classList.contains('network-has-friends')) return activeNetwork === 'stella' || activeNetwork === 'receos';
   return true;
 }
 
@@ -4959,8 +4961,8 @@ $('steamModal')?.addEventListener('click', (e) => {
 // (steam://install/92) is installed. If it already is, this is invisible.
 async function executeLaunch() {
   // Codename Gordon is what the older clients lean on for Steam; Stella's
-  // 2024 client doesn't need it.
-  if (config.disableWarnings !== true && activeNetwork !== 'stella') {
+  // 2024 client and Rec EOS's 2022 one don't need it.
+  if (config.disableWarnings !== true && activeNetwork !== 'stella' && activeNetwork !== 'receos') {
     let installed = true;
     try {
       installed = await window.radium?.checkRequiredSteamApp();
@@ -5499,6 +5501,9 @@ function trayInfo() {
     // Pop-ups are Vanilla's and Stella's notifications; Radium has none.
     popups: activeNetwork === 'radium' ? null : getToggle('tgl-notifPopups'),
     friends: trayFriends(),
+    // Rec EOS chats whichever network is on, so the panel can draw them the
+    // moment Rec EOS is picked there, and keeps room for them all along.
+    chats: trayChats(),
     // Whether Stella shows friends at all (Settings: Friends → Hidden), for
     // sizing the panel on any network: Stella's is the tallest.
     stellaFriends: friendsView() !== 'hidden',
@@ -5574,8 +5579,9 @@ function trayGame() {
 /// first, or a note saying why there are none.
 const TRAY_FRIEND_ROWS = 3;
 function trayFriends() {
-  if (activeNetwork !== 'stella' || friendsView() === 'hidden') return null;
-  if (!stellaPlayer) {
+  if (!stellaLike() || friendsView() === 'hidden') return null;
+  if (activeNetwork === 'receos' && !receosPlayer) return { note: 'Log in to Rec EOS to see your friends.' };
+  if (activeNetwork === 'stella' && !stellaPlayer) {
     return { note: stellaAuthPending ? 'Signing in…'
       : stellaAuthError === STELLA_NO_ACCOUNT ? 'Play Stella once to make your account.'
       : 'Log in to Stella to see your friends.' };
@@ -5602,6 +5608,29 @@ function trayFriends() {
         status: f.status === 'online' ? 'online' : f.status === 'offline' ? 'offline' : 'unknown',
         favorite: !!f.favorite,
         avatar: f.AvatarUrl ? thumbSrc(f.AvatarUrl, avatarWidth(28)) : '',
+      };
+    }),
+  };
+}
+
+/// Rec EOS, signed in: the three newest chats, unread ones marked.
+const TRAY_CHAT_ROWS = 3;
+function trayChats() {
+  if (!receosPlayer) return null;
+  const unread = chatThreads.filter(t => t.unread).length;
+  return {
+    summary: unread ? `${unread} unread` : 'All chats',
+    note: chatThreads.length ? '' : 'No chats yet.',
+    rows: chatThreads.slice(0, TRAY_CHAT_ROWS).map(t => {
+      const last = t.latest;
+      const mine = last && Number(last.senderId) === Number(receosPlayer?.id);
+      const pic = t.members?.[0]?.AvatarUrl;
+      return {
+        id: String(t.id),
+        name: chatName(t),
+        last: last ? `${mine ? 'You: ' : ''}${last.text}` : '',
+        unread: !!t.unread,
+        avatar: pic ? thumbSrc(pic, avatarWidth(28)) : '',
       };
     }),
   };
@@ -5773,14 +5802,15 @@ function playFromTray() {
 /// hidden window says nothing.
 function joinFromTray(id) {
   const friend = stellaFriendsById.get(Number(id));
-  if (activeNetwork !== 'stella' || !friend) return;
-  if (friend.private || isGameRunning || isGameLaunching || !isInstalled || stellaUpdateNeeded()) {
+  if (!stellaLike() || !friend) return;
+  if ((friend.private && activeNetwork === 'stella') || isGameRunning || isGameLaunching || !isInstalled || stellaUpdateNeeded()) {
     window.radium?.showLauncher();
   } else {
     pendingJoin = null;
     revealOnNextModal();
   }
-  joinStellaFriend(friend);
+  if (activeNetwork === 'receos') joinReceosFriend(friend);
+  else joinStellaFriend(friend);
 }
 
 window.radium?.onTrayAction?.(async ({ action, value }) => {
@@ -5820,6 +5850,7 @@ window.radium?.onTrayAction?.(async ({ action, value }) => {
     $('btnDownload')?.click();
   }
   else if (action === 'join') joinFromTray(value);
+  else if (action === 'chat') openChatFromPopup(Number(value));
   else if (action === 'friend') {
     const friend = stellaFriendsById.get(Number(value));
     if (friend) openFriendProfile(friend);
@@ -7928,6 +7959,40 @@ let chatLoading = false;
 let receosCursors = null;
 const CHAT_POLL_MS = 20 * 1000;
 
+/// Unread chats as rows in the Rec EOS bell: one per chat, its newest
+/// message. The id carries that message, so a new one counts as unread again.
+/// The chat on screen isn't one. Pop-ups for them come from pollReceos.
+function chatNotifItems() {
+  const shown = !!document.querySelector('#tab-chats.active') && activeNetwork === 'receos';
+  return chatThreads
+    .filter(t => t.unread && t.latest && !(shown && t.id === chatOpenId))
+    .map(t => {
+      const last = t.latest;
+      const sender = (t.members || []).find(m => Number(m.id) === Number(last.senderId)) || t.members?.[0];
+      return {
+        id: `chat:${t.id}:${last.id}`,
+        type: 'chat',
+        threadId: t.id,
+        group: (t.members || []).length > 1 || t.name ? chatName(t) : '',
+        senderId: last.senderId,
+        senderName: last.senderName || sender?.userName || '',
+        senderDisplay: last.senderDisplay || sender?.displayName || '',
+        senderAvatar: sender?.AvatarUrl || '',
+        message: last.text,
+        sentTime: last.sentTime,
+      };
+    });
+}
+
+/// The bell's chat rows again, after the chats changed.
+function refreshChatNotifs() {
+  const src = notifSources.receos;
+  if (!receosPlayer) return;
+  src.items = [...src.items.filter(n => n.type !== 'chat'), ...chatNotifItems()];
+  setNotifBadge(src);
+  if (!$('vanillaNotifsPanel')?.hidden && panelSource === src) renderNotifPanel();
+}
+
 function setChatsBadge(n) {
   const badge = $('chatsBadge');
   if (!badge) return;
@@ -7988,6 +8053,8 @@ function renderChatList() {
   // The open chat counts too while the CHATS tab isn't on screen.
   const shown = !!document.querySelector('#tab-chats.active');
   setChatsBadge(chatThreads.filter(t => t.unread && !(shown && t.id === chatOpenId)).length);
+  refreshChatNotifs();
+  syncTray();
   if (!chatThreads.length) {
     list.replaceChildren(chatsNote('No chats yet. Start one with + New chat.'));
     return;
@@ -8164,8 +8231,18 @@ async function openChatFromPopup(threadId) {
 }
 
 /// New chat messages (and anything else new) since the last look.
+let receosPolling = false;
 async function pollReceos() {
-  if (!receosPlayer) return;
+  if (!receosPlayer || receosPolling) return;
+  receosPolling = true;
+  try {
+    await pollReceosOnce();
+  } finally {
+    receosPolling = false;
+  }
+}
+
+async function pollReceosOnce() {
   let res;
   try {
     res = await window.radium.receosUpdates(null, receosCursors ? receosCursors.chat : null);
@@ -8176,16 +8253,16 @@ async function pollReceos() {
   const first = !receosCursors;
   receosCursors = { chat: res.chatCursor };
   if (first || !res.chat?.length) return;
+  // New messages go into the open chat whether or not the window has focus
+  // (the game is usually in front); they only count as read once it does.
   const chatTabOpen = document.querySelector('#tab-chats.active') && activeNetwork === 'receos';
   const looking = chatTabOpen && document.hasFocus();
-  for (const m of res.chat) {
-    if (looking && m.threadId === chatOpenId) {
-      chatMessagesShown.push(m);
-    }
-  }
-  if (looking && res.chat.some(m => m.threadId === chatOpenId)) {
+  const known = new Set(chatMessagesShown.map(m => m.id));
+  const intoOpen = chatTabOpen ? res.chat.filter(m => m.threadId === chatOpenId && !known.has(m.id)) : [];
+  if (intoOpen.length) {
+    chatMessagesShown.push(...intoOpen);
     renderChatMessages({ keepScroll: true });
-    markChatRead(chatOpenId);
+    if (looking) markChatRead(chatOpenId);
   }
   // The chat list, with its unread marks.
   if (activeNetwork === 'receos') {
@@ -8224,6 +8301,17 @@ setInterval(() => {
   pollReceos();
 }, CHAT_POLL_MS);
 
+// Back from the game: what came in while away counts as read now, and a
+// check right away instead of at the next tick.
+window.addEventListener('focus', () => {
+  if (!receosPlayer || activeNetwork !== 'receos') return;
+  if (chatOpenId && document.querySelector('#tab-chats.active')) {
+    const t = chatThreads.find(x => x.id === chatOpenId);
+    if (t?.unread) markChatRead(chatOpenId);
+  }
+  pollReceos();
+});
+
 // Whoever is signed in, from the last run.
 setTimeout(refreshReceosAuth, 0);
 
@@ -8259,7 +8347,17 @@ const notifSources = {
     net: 'receos', label: 'Rec EOS', items: [], loading: false, announced: null,
     bell: 'receosNotifsBtn', badge: 'receosNotifBadge',
     player: () => receosPlayer,
-    fetch: () => window.radium.receosNotifications(),
+    fetch: async () => {
+      const [list, threads] = await Promise.all([
+        window.radium.receosNotifications(),
+        window.radium.receosChatThreads().catch(() => null),
+      ]);
+      if (threads) {
+        chatThreads = threads;
+        renderChatList();
+      }
+      return [...list, ...chatNotifItems()];
+    },
   },
 };
 /// The list the panel shows: the bell that last opened it.
@@ -8391,6 +8489,11 @@ function stellaRoomLabel(room) {
 /// The message as parts (`{ t, b }`, b for bold), the sender's name in bold.
 /// Inserted as text, never markup, both here and in the desktop pop-up.
 function notifParts(n, net) {
+  if (n.type === 'chat') {
+    return [{ t: n.senderDisplay || n.senderName || 'A player', b: true },
+            ...(n.group ? [{ t: ' in ' }, { t: n.group, b: true }] : []),
+            { t: `: ${n.message || ''}` }];
+  }
   // Stella's invites carry the room's name.
   const invite = n.type === 6 && n.message;
   const template = invite ? '{s} invited you to join them in {m}.'
@@ -8491,6 +8594,18 @@ function notifRow(src, n, unread) {
     accept.addEventListener('click', () => acceptStellaRequest(request, accept));
     wrap.append(open, accept);
     return wrap;
+  }
+  if (n.type === 'chat') {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'notif-item';
+    row.classList.toggle('unread', unread);
+    row.append(notifAvatar(n, 32), notifBody(n, src.net));
+    row.addEventListener('click', () => {
+      closeNotifPanel();
+      openChatFromPopup(n.threadId);
+    });
+    return row;
   }
   const clickable = join || n.senderName;
   const row = document.createElement(clickable ? 'button' : 'div');
@@ -8668,6 +8783,8 @@ function announceNewNotifs(src, list) {
     .filter(n => !seen.has(String(n.id)))
     // A Stella invite has popped up already, with its JOIN (showStellaInvite).
     .filter(n => !(src.net === 'stella' && n.type === 6))
+    // Chat messages pop up from pollReceos, as they arrive.
+    .filter(n => n.type !== 'chat')
     .sort((a, b) => String(a.sentTime || '').localeCompare(String(b.sentTime || '')));
   if (show.length) deliverNotifPops(src, show);
 }
