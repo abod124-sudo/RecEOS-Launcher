@@ -1220,22 +1220,63 @@ async fn repair_impl(app: &tauri::AppHandle, network: Network, full: bool) -> Re
         }
     } else {
         match repair_by_ranges(app, network, &client_dir, damaged.clone()).await? {
-            Some(value) => value,
-            None => return Ok(full_download_needed(app, network, &damaged).await),
+            Ranged::Done(value) => value,
+            Ranged::NoRanges => return Ok(full_download_needed(app, network, &damaged).await),
+            // Many files on a slow-to-answer server: one read through the
+            // zip beats a request per file (see stream_is_faster).
+            Ranged::StreamIsFaster => match repair_by_stream(app, network, &client_dir, damaged.clone()).await {
+                Err(e) if e == CANT_SCAN => download::download_and_repair(app.clone(), network, damaged).await?,
+                result => result?,
+            },
         }
     };
     *LAST_CHECK.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    // Rec EOS's mod isn't in the zip (it comes from the update server), so a
+    // repair that took BepInEx back puts the mod back too. If that can't be
+    // done now, Home offers UPDATE.
+    if network == Network::RecEos {
+        if let Err(e) = crate::receos::update_patch(app).await {
+            crate::applog::backend("warn", "Rec EOS", format!("Repaired the client, but couldn't reinstall Rec EOS yet: {e}"));
+        }
+    }
     Ok(result)
 }
 
+/// How a repair by ranges went.
+enum Ranged {
+    Done(Value),
+    /// The server doesn't send parts of the file.
+    NoRanges,
+    /// It does, but reading the zip straight through is quicker.
+    StreamIsFaster,
+}
+
+/// The read rate a stream repair is assumed to get. Low on purpose: a slow
+/// line should still choose ranges for a few files at the end of a big zip.
+const ASSUMED_STREAM_BYTES_PER_SEC: f64 = 10.0 * 1024.0 * 1024.0;
+
+/// Whether reading the zip from its start up to the last damaged file is
+/// quicker than asking for each file: a request per file (at least) at the
+/// time the server took to answer the probe, against the bytes before the
+/// last damaged file at [`ASSUMED_STREAM_BYTES_PER_SEC`]. MediaFire takes
+/// ~1.7 s a request, so hundreds of files took ten minutes by ranges and well
+/// under one as a stream.
+fn stream_is_faster(damaged: &[FileRecord], per_request: Duration) -> bool {
+    if !streamable(damaged) {
+        return false;
+    }
+    let by_ranges = per_request.as_secs_f64() * damaged.len() as f64;
+    let by_stream = stream_end(damaged) as f64 / ASSUMED_STREAM_BYTES_PER_SEC;
+    by_stream < by_ranges
+}
+
 /// Fetch just the damaged files from a server that answers byte ranges.
-/// `None` when it doesn't.
 async fn repair_by_ranges(
     app: &tauri::AppHandle,
     network: Network,
     client_dir: &str,
     damaged: Vec<FileRecord>,
-) -> Result<Option<Value>, String> {
+) -> Result<Ranged, String> {
     let _guard = download::claim_client_task()?;
     download::reset_cancel();
     if game::game_running(app) {
@@ -1243,9 +1284,13 @@ async fn repair_by_ranges(
     }
     let url = download::resolve_client_url(app, network).await?;
     let http = range_client()?;
+    let asked = std::time::Instant::now();
     let Some(remote) = probe_ranges(&http, &url, download::download_user_agent(network)).await? else {
-        return Ok(None);
+        return Ok(Ranged::NoRanges);
     };
+    if stream_is_faster(&damaged, asked.elapsed()) {
+        return Ok(Ranged::StreamIsFaster);
+    }
 
     let runtime = tokio::runtime::Handle::current();
     let repaired = {
@@ -1270,7 +1315,7 @@ async fn repair_by_ranges(
     // A cancel inside a fetch surfaces as an I/O error wrapping it.
     let repaired = repaired.map_err(|e| if download::cancel_requested() { download::CANCELLED.to_string() } else { e })?;
     let _ = app.emit("download-progress", json!({ "phase": "done", "pct": 100 }));
-    Ok(Some(json!({ "success": true, "repaired": repaired })))
+    Ok(Ranged::Done(json!({ "success": true, "repaired": repaired })))
 }
 
 /// The answer for a server that sends only the whole zip: how big the client
@@ -1473,6 +1518,71 @@ mod tests {
     /// directory off the server, and repair one file from it. A Python wheel
     /// is a plain zip, on a CDN that answers byte ranges — which no revival
     /// server this launcher knows does today.
+    #[test]
+    fn many_files_on_a_slow_server_are_read_as_one_stream() {
+        let rec = |data: u64| FileRecord {
+            path: format!("f{data}"),
+            size: 10,
+            crc32: 0,
+            at: Some(ZipSpot { header: data.saturating_sub(40), data, csize: 1000, method: 8 }),
+        };
+        // 300 files in the first 200 MB, 1.7 s a request: stream.
+        let many: Vec<_> = (0..300u64).map(|i| rec(i * 600_000)).collect();
+        assert!(stream_is_faster(&many, Duration::from_millis(1700)));
+        // Three files at the end of a 3 GB zip: ranges.
+        let few: Vec<_> = (0..3u64).map(|i| rec(3_000_000_000 + i * 1000)).collect();
+        assert!(!stream_is_faster(&few, Duration::from_millis(1700)));
+        // A fast server: ranges even for many.
+        assert!(!stream_is_faster(&many, Duration::from_millis(20)));
+        // Nothing recorded about where they are: ranges.
+        let unknown = vec![FileRecord { at: None, ..rec(5) }];
+        assert!(!stream_is_faster(&unknown, Duration::from_secs(10)));
+    }
+
+    /// The Rec EOS client on MediaFire: losing BepInEx (the user's test,
+    /// 2026-10-27) is repaired as one stream, not 300 slow range requests.
+    /// `RECEOS_CLIENT_DIR=<installed client> cargo test --lib -- --ignored receos_loader_repairs`
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "reads part of the Rec EOS client from MediaFire"]
+    async fn receos_loader_repairs_from_mediafire_as_a_stream() {
+        let url = crate::receos::resolve_client_url().await.unwrap();
+        let http = range_client().unwrap();
+        let asked = std::time::Instant::now();
+        let remote = probe_ranges(&http, &url, crate::receos::USER_AGENT).await.unwrap().expect("ranges");
+        let latency = asked.elapsed();
+        let _ = remote;
+        let runtime = tokio::runtime::Handle::current();
+        // Where each file is, from an installed client's list (written at
+        // install, as a real repair reads it): RECEOS_CLIENT_DIR.
+        let installed = std::env::var("RECEOS_CLIENT_DIR").expect("set RECEOS_CLIENT_DIR to an installed Rec EOS client");
+        let damaged: Vec<FileRecord> = read_files_manifest(Path::new(&installed))
+            .expect("a file list")
+            .into_iter()
+            .filter(|f| f.path.starts_with("BepInEx/"))
+            .collect();
+        assert!(damaged.len() > 100, "{}", damaged.len());
+        assert!(stream_is_faster(&damaged, latency), "{} files, {latency:?} a request", damaged.len());
+
+        let started = std::time::Instant::now();
+        let response = http.get(&url).header("User-Agent", crate::receos::USER_AGENT).send().await.unwrap();
+        let stream = Box::pin(response.bytes_stream());
+        let dir = temp_dir("receos-stream");
+        let repaired = tokio::task::spawn_blocking({
+            let dir = dir.clone();
+            let damaged = damaged.clone();
+            move || {
+                let body = BodyReader { runtime, stream, chunk: None, at: 0 };
+                repair_from_stream(body, &dir, &damaged, &mut |_| {}).unwrap()
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(repaired, damaged.len());
+        assert!(check_files(&dir, &damaged, &mut |_| {}).unwrap().is_empty());
+        eprintln!("{} files ({} MB read) repaired in {:?}", repaired, stream_end(&damaged) / 1_048_576, started.elapsed());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "hits pypi.org and files.pythonhosted.org"]
     async fn repairs_a_file_from_a_real_zip_over_https_ranges() {
