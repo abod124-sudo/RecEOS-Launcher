@@ -9,7 +9,7 @@ use crate::download;
 ///
 /// Built from `SystemRoot` rather than assuming `C:\Windows`; falls back to the
 /// bare name, resolved through `PATH`, only if that file isn't there.
-fn get_powershell_path() -> String {
+pub(crate) fn get_powershell_path() -> String {
     let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
     let path = format!(
         r"{}\System32\WindowsPowerShell\v1.0\powershell.exe",

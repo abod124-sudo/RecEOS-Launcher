@@ -207,6 +207,16 @@ pub(crate) fn cancel_requested() -> bool {
     DOWNLOAD_CANCELLED.load(Ordering::SeqCst)
 }
 
+/// Whether the user has asked the running download to pause.
+pub(crate) fn pause_requested() -> bool {
+    DOWNLOAD_PAUSED.load(Ordering::SeqCst)
+}
+
+/// Clear a pause left over from an earlier download, at the start of a new one.
+pub(crate) fn reset_pause() {
+    DOWNLOAD_PAUSED.store(false, Ordering::SeqCst);
+}
+
 /// RAII guard that clears `DOWNLOAD_IN_PROGRESS` on every exit path.
 pub(crate) struct DownloadGuard;
 impl Drop for DownloadGuard {
@@ -560,6 +570,14 @@ pub async fn check_client_update(app: tauri::AppHandle, network: Option<String>)
     let cfg = config::current(&app);
     let network = Network::parse(network.as_deref());
 
+    // Vanilla's CDN manifest carries the current game version.
+    if network == Network::Vanilla {
+        if !crate::vanilla_game::game_installed() {
+            return json!({ "success": true, "hasUpdate": false });
+        }
+        return crate::vanilla_game::check_update().await;
+    }
+
     if cfg.game_exe_for(network).is_empty() {
         return json!({ "success": true, "hasUpdate": false });
     }
@@ -669,6 +687,14 @@ pub async fn download_client(
     app: tauri::AppHandle,
     network: Option<String>,
 ) -> Result<Value, String> {
+    // Vanilla's game is a file list on Vanilla's CDN, not a zip: its own
+    // downloader, which also has Vanilla's launcher sign the install off.
+    if Network::parse(network.as_deref()) == Network::Vanilla {
+        return Ok(match crate::vanilla_game::download(app).await {
+            Ok(val) => val,
+            Err(err) => json!({ "success": false, "error": err }),
+        });
+    }
     match download_client_impl(app, Network::parse(network.as_deref()), None).await {
         Ok(val) => Ok(val),
         Err(err) => Ok(json!({ "success": false, "error": err })),
@@ -1534,7 +1560,7 @@ fn write_entries<R: Read + std::io::Seek>(
 }
 
 /// Round a byte count for an error message the user will read.
-fn human_bytes(n: u64) -> String {
+pub(crate) fn human_bytes(n: u64) -> String {
     const GB: u64 = 1024 * 1024 * 1024;
     const MB: u64 = 1024 * 1024;
     if n >= GB {
@@ -1735,14 +1761,43 @@ pub async fn check_install(
         && network == Network::Radium
         && cfg.client_build != REQUIRED_CLIENT_BUILD;
 
+    // Vanilla's PC build runs only through Vanilla's own launcher (its
+    // anti-cheat only trusts a session that launcher creates). Rec EOS
+    // downloads the game files into that launcher's game folder
+    // (`vanilla_game`); the launcher signs the install off and launches it.
+    // "Installed" means the launcher is there and has recorded the game.
+    let vanilla_launcher = (network == Network::Vanilla).then(game::find_vanilla_launcher).flatten();
+    let (installed, needs_repair, exe_path, client_dir) = if network == Network::Vanilla {
+        // The folder shown is where Vanilla's launcher keeps the game (its
+        // `installDirectory`\Vanilla), not Rec EOS's old client-vanilla folder.
+        let game_dir = game::vanilla_launcher_game_dir().unwrap_or(client_dir);
+        let game_ok = vanilla_launcher.is_some() && crate::vanilla_game::game_installed();
+        let exe = if game_ok {
+            Path::new(&game_dir).join("RecRoom.exe").to_string_lossy().to_string()
+        } else {
+            String::new()
+        };
+        (game_ok, false, exe, game_dir)
+    } else {
+        (installed, needs_repair, exe_path, client_dir)
+    };
+    let client_version = if network == Network::Vanilla {
+        crate::vanilla_game::installed_version().unwrap_or_default()
+    } else {
+        cfg.client_version_for(network).to_string()
+    };
+
     Ok(json!({
         "installed": installed,
         "exePath": exe_path,
         "clientDir": client_dir,
         "isRunning": is_running,
         "clientOutdated": client_outdated,
-        "clientVersion": cfg.client_version_for(network),
+        "clientVersion": client_version,
         "network": network.as_str(),
+        // Vanilla only: whether Vanilla's own launcher is installed (the game
+        // can't be downloaded or played without it).
+        "launcherInstalled": vanilla_launcher.is_some(),
         // A client folder the launcher renamed out of the way because it held
         // another network's client. Reported so the UI can tell the user where
         // those files went instead of silently leaving them on disk.
@@ -1770,6 +1825,309 @@ pub async fn check_install(
         "avExcluded": cfg.defender_excluded_for(network),
         "defenderDirs": cfg.defender_dirs_for(network),
     }))
+}
+
+// ─── Vanilla launcher install ────────────────────────────────────────────────
+
+/// Vanilla's launcher updater manifest (Tauri v2 format), public and keyless.
+/// It always names the latest launcher build, so we read the installer URL from
+/// here rather than hardcoding a version that would go stale on every update.
+pub(crate) const VANILLA_MANIFEST_URL: &str = "https://api.vanillarec.net/launcher/manifest";
+
+/// The only host the manifest may send us to for the installer. Both the
+/// manifest and the installer must be Vanilla's own API over https.
+const VANILLA_API_HOST: &str = "api.vanillarec.net";
+
+/// Vanilla's minisign update public key (key id 81338976FC4BFAF0), read from
+/// their launcher binary. The installer the manifest points at is signed with
+/// the matching private key; an installer that doesn't verify against this is
+/// never written to disk or run — the same bar `updater::download_update`
+/// holds our own installer to. This is integrity only (is this really
+/// Vanilla's installer), not a claim about what the installer then does.
+const VANILLA_UPDATE_PUBLIC_KEY: &str =
+    "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDgxMzM4OTc2RkM0QkZBRjAKUldUdytrdjhkb2t6Z1Zpb0RRNXM5TWltMHFka0EzMjFTRlczV29VNmpYWUZOTHoxU3YwWkFZVncK";
+
+/// Largest launcher installer accepted. 1.0.17 is ~106 MB; this leaves room to
+/// grow while still refusing anything absurd.
+const MAX_VANILLA_MSI_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Temp filename prefix for the downloaded launcher installer.
+const VANILLA_MSI_PREFIX: &str = "VanillaLauncherSetup_";
+
+/// Delete launcher installers left in temp by earlier installs. Windows keeps
+/// its own cached copy once an MSI is installed, so the ~106 MB temp file is
+/// dead weight afterwards. Only our own prefix, only `.msi`, only files older
+/// than an hour — so the one this run just wrote (and any a concurrent install
+/// is still using) is left alone. Best-effort: a locked file stays.
+fn clean_stale_vanilla_msis(temp_dir: &Path) {
+    const MAX_AGE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+    let Ok(entries) = fs::read_dir(temp_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with(VANILLA_MSI_PREFIX) || !name.ends_with(".msi") {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.elapsed().ok())
+            .map(|age| age > MAX_AGE)
+            .unwrap_or(false);
+        if stale {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// Whether `url` is Vanilla's own API over https with nothing funny in it.
+fn is_vanilla_api_url(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    parsed.scheme() == "https"
+        && parsed.host_str() == Some(VANILLA_API_HOST)
+        && parsed.port().is_none()
+        && parsed.username().is_empty()
+        && parsed.password().is_none()
+}
+
+/// Verify Vanilla's installer bytes against its manifest `signature` using
+/// [`VANILLA_UPDATE_PUBLIC_KEY`]. Same minisign scheme as our own updater.
+fn verify_vanilla_signature(installer: &[u8], signature: &str) -> Result<(), String> {
+    use base64::Engine;
+    let decode = |text: &str| {
+        base64::engine::general_purpose::STANDARD
+            .decode(text.trim())
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+    };
+    let key = decode(VANILLA_UPDATE_PUBLIC_KEY)
+        .and_then(|text| minisign_verify::PublicKey::decode(&text).ok())
+        .ok_or("Vanilla's update key is unreadable, so the installer wasn't run.")?;
+    let signature = decode(signature)
+        .and_then(|text| minisign_verify::Signature::decode(&text).ok())
+        .ok_or("Vanilla's installer signature is unreadable, so it wasn't run.")?;
+    key.verify(installer, &signature, false).map_err(|_| {
+        "Vanilla's installer didn't match its signature, so it wasn't run. \
+         Install it from vanillarec.net/download instead."
+            .to_string()
+    })
+}
+
+/// Download Vanilla's launcher installer (the latest the manifest names) and
+/// start it. The game runs only through Vanilla's launcher (anti-cheat), so
+/// this is how Rec EOS gets a user set up without sending them off to a web
+/// page. The installer is verified against Vanilla's update key before it is
+/// written anywhere it could run, then started via `msiexec` so Windows shows
+/// the normal install UI and handles elevation. We do not wait for or script
+/// the install — the user clicks through it — and we never pass silent flags.
+#[tauri::command]
+pub async fn install_vanilla_launcher(app: tauri::AppHandle) -> Result<Value, String> {
+    if client_busy() {
+        return Err("Wait for the current download or file check to finish first.".into());
+    }
+    // The Cancel button on the shared progress panel calls `cancel_download`,
+    // which sets this flag; clear any stale value so the loop below starts fresh
+    // and honours a fresh press.
+    DOWNLOAD_CANCELLED.store(false, Ordering::SeqCst);
+
+    // No total timeout: it would cap the whole ~106 MB download to one deadline
+    // and fail slow connections. A per-request timeout bounds the manifest and
+    // the installer's headers; a stall cutoff in the stream loop bounds the body.
+    let client = reqwest::Client::builder()
+        .https_only(true)
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("Couldn't start the download: {}", e))?;
+
+    // 1. Manifest → the latest installer's URL and signature.
+    let manifest: Value = {
+        let resp = client
+            .get(VANILLA_MANIFEST_URL)
+            .header("User-Agent", "RecEOS-Launcher")
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await
+            .map_err(|e| format!("Couldn't reach Vanilla's update server: {}", e))?;
+        if !resp.status().is_success() {
+            return Err(format!(
+                "Vanilla's update server answered HTTP {}.",
+                resp.status().as_u16()
+            ));
+        }
+        let body = crate::server::read_capped(resp, crate::server::MAX_API_BYTES)
+            .await
+            .map_err(|e| format!("Couldn't read Vanilla's update manifest: {}", e))?;
+        serde_json::from_slice(&body)
+            .map_err(|e| format!("Vanilla's update manifest was unreadable: {}", e))?
+    };
+
+    let platform = manifest
+        .get("platforms")
+        .and_then(|p| p.get("windows-x86_64"))
+        .ok_or("Vanilla's manifest lists no Windows installer.")?;
+    let url = platform
+        .get("url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let signature = platform
+        .get("signature")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let version = manifest
+        .get("version")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if url.is_empty() || signature.is_empty() {
+        return Err("Vanilla's manifest didn't include a signed installer.".into());
+    }
+    if !is_vanilla_api_url(&url) {
+        return Err(
+            "Vanilla's manifest pointed the installer somewhere unexpected, so nothing was downloaded."
+                .into(),
+        );
+    }
+
+    // 2. Stream the installer, reporting progress to the existing download UI.
+    // The send is bounded so a server that accepts the connection but never
+    // sends headers can't hang here; the body is bounded by the stall cutoff.
+    let resp = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        client.get(&url).header("User-Agent", "RecEOS-Launcher").send(),
+    )
+    .await
+    .map_err(|_| "Vanilla's launcher download didn't start in time.".to_string())?
+    .map_err(|e| format!("Couldn't download Vanilla's launcher: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!(
+            "Vanilla's launcher download failed: HTTP {}",
+            resp.status().as_u16()
+        ));
+    }
+    let total = resp.content_length().unwrap_or(0);
+    if total > MAX_VANILLA_MSI_BYTES {
+        return Err("Vanilla's installer is far larger than expected; nothing was downloaded.".into());
+    }
+    let _ = app.emit(
+        "download-progress",
+        json!({ "phase": "download", "pct": 0, "downloaded": 0, "total": total, "status": "Downloading Vanilla Launcher..." }),
+    );
+
+    use futures_util::StreamExt;
+    let mut stream = resp.bytes_stream();
+    let mut bytes: Vec<u8> = Vec::with_capacity(total.min(MAX_VANILLA_MSI_BYTES) as usize);
+    let start = std::time::Instant::now();
+    let mut last_emit = std::time::Instant::now();
+    // Wait on each chunk in short slices so Cancel (a flag) is noticed promptly,
+    // and a connection that goes quiet without closing hits the stall cutoff
+    // rather than hanging forever. Same shape as the client download loop.
+    let mut last_data = std::time::Instant::now();
+    loop {
+        let chunk = match tokio::time::timeout(FLAG_POLL_INTERVAL, stream.next()).await {
+            Ok(Some(c)) => {
+                Some(c.map_err(|e| format!("Vanilla's launcher download was interrupted: {}", e))?)
+            }
+            Ok(None) => break,
+            Err(_) => None,
+        };
+
+        if DOWNLOAD_CANCELLED.load(Ordering::SeqCst) {
+            return Err(CANCELLED.into());
+        }
+
+        let Some(chunk) = chunk else {
+            if last_data.elapsed() >= STALL_TIMEOUT {
+                return Err(format!(
+                    "Vanilla's launcher download stalled (no data for {} seconds).",
+                    STALL_TIMEOUT.as_secs()
+                ));
+            }
+            continue;
+        };
+        last_data = std::time::Instant::now();
+
+        bytes.extend_from_slice(&chunk);
+        if bytes.len() as u64 > MAX_VANILLA_MSI_BYTES {
+            return Err("Vanilla's installer is far larger than expected; nothing was installed.".into());
+        }
+        if last_emit.elapsed() >= std::time::Duration::from_millis(100) {
+            last_emit = std::time::Instant::now();
+            let downloaded = bytes.len() as u64;
+            let pct = if total > 0 {
+                ((downloaded as f64 / total as f64) * 100.0).min(99.0) as i64
+            } else {
+                -1
+            };
+            let secs = start.elapsed().as_secs_f64().max(0.001);
+            let speed = (downloaded as f64 / secs) as u64;
+            let eta = if total > downloaded && speed > 0 {
+                ((total - downloaded) / speed) as i64
+            } else {
+                -1
+            };
+            let _ = app.emit(
+                "download-progress",
+                json!({ "phase": "download", "pct": pct, "downloaded": downloaded, "total": total, "speed": speed, "eta": eta }),
+            );
+        }
+    }
+
+    // 3. Verify against Vanilla's update key before the bytes touch disk.
+    verify_vanilla_signature(&bytes, &signature)?;
+
+    // 4. Write to a fresh, unpredictably-named temp file and start the installer.
+    let _ = app.emit(
+        "download-progress",
+        json!({ "phase": "extract", "pct": 100, "status": "Starting the installer..." }),
+    );
+    let unique = format!(
+        "{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    );
+    let temp_dir = std::env::temp_dir();
+    clean_stale_vanilla_msis(&temp_dir);
+    let msi_path = temp_dir.join(format!("{}{}.msi", VANILLA_MSI_PREFIX, unique));
+    {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&msi_path)
+            .map_err(|e| format!("Couldn't save the installer: {}", e))?;
+        file.write_all(&bytes)
+            .map_err(|e| format!("Couldn't save the installer: {}", e))?;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        // `msiexec /i` shows Windows' own install UI and raises the UAC prompt
+        // itself. Detached so it outlives this command.
+        std::process::Command::new("msiexec.exe")
+            .arg("/i")
+            .arg(&msi_path)
+            .creation_flags(0x00000008) // DETACHED_PROCESS
+            .spawn()
+            .map_err(|e| format!("Couldn't start the installer: {}", e))?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = &msi_path;
+        return Err("Installing Vanilla's launcher is only supported on Windows.".into());
+    }
+
+    let _ = app.emit("download-progress", json!({ "phase": "done", "pct": 100 }));
+    Ok(json!({ "success": true, "version": version }))
 }
 
 // ─── Open client folder ─────────────────────────────────────────────────────
@@ -2849,5 +3207,57 @@ mod resume_tests {
         fs::write(&path, r#"{"url":"https://x/c.zip","etag":"","total":0}"#).unwrap();
         assert!(!read_part_meta(&path).unwrap().resumable);
         let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod vanilla_install_tests {
+    use super::*;
+
+    #[test]
+    fn only_vanillas_api_over_https_is_accepted() {
+        assert!(is_vanilla_api_url(
+            "https://api.vanillarec.net/launcher/cdn/l/Vanilla%20Launcher_1.0.17_x64_en-US.msi"
+        ));
+        for bad in [
+            "http://api.vanillarec.net/launcher/cdn/l/x.msi",
+            "https://api.vanillarec.net:8443/launcher/cdn/l/x.msi",
+            "https://evil@api.vanillarec.net/launcher/cdn/l/x.msi",
+            "https://vanillarec.net/launcher/cdn/l/x.msi",
+            "https://api.vanillarec.net.evil.example/launcher/cdn/l/x.msi",
+            "not a url",
+        ] {
+            assert!(!is_vanilla_api_url(bad), "{bad} should be refused");
+        }
+    }
+
+    /// Confirms the live installer the manifest names verifies against Vanilla's
+    /// update key — i.e. requiring the signature won't reject a legit install.
+    /// Downloads ~106 MB, so it's manual:
+    /// `cargo test -- --ignored the_live_installer`
+    #[tokio::test]
+    #[ignore = "downloads the real ~106MB Vanilla installer; run manually"]
+    async fn the_live_installer_verifies_against_its_signature() {
+        let client = reqwest::Client::builder()
+            .https_only(true)
+            .timeout(std::time::Duration::from_secs(600))
+            .build()
+            .unwrap();
+        let manifest: Value = client
+            .get(VANILLA_MANIFEST_URL)
+            .header("User-Agent", "RecEOS-Launcher")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let plat = &manifest["platforms"]["windows-x86_64"];
+        let url = plat["url"].as_str().expect("installer url");
+        let sig = plat["signature"].as_str().expect("installer signature");
+        assert!(is_vanilla_api_url(url), "manifest url must be Vanilla's api");
+        let bytes = client.get(url).send().await.unwrap().bytes().await.unwrap();
+        verify_vanilla_signature(&bytes, sig)
+            .expect("the live installer should verify against Vanilla's update key");
     }
 }

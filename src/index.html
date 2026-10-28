@@ -316,20 +316,20 @@
           <!-- Steam's "Verify integrity of game files". Wears btn-reinstall for
                the same reason every row wears a btn-* class: each skin paints
                it the way it paints the rows around it. -->
-          <button class="btn-reinstall manage-item" role="menuitem" id="btnVerifyFiles">
+          <button class="btn-reinstall manage-item not-on-vanilla" role="menuitem" id="btnVerifyFiles">
             <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14 10H2v2h12v-2zm0-4H2v2h12V6zM2 16h8v-2H2v2zm19.5-4.5L23 13l-6.99 7-4.51-4.5L13 14l3.01 3 5.49-5.5z"/></svg>
             <span>Verify Files</span>
           </button>
-          <button class="btn-reinstall manage-item" role="menuitem" id="btnReinstall">
+          <button class="btn-reinstall manage-item not-on-vanilla" role="menuitem" id="btnReinstall">
             <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M17.65 6.35A7.96 7.96 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
             <span>Reinstall</span>
           </button>
-          <button class="btn-exclude-av manage-item" role="menuitem" id="btnExcludeAv">
+          <button class="btn-exclude-av manage-item not-on-vanilla" role="menuitem" id="btnExcludeAv">
             <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-1.2 15.6L6.6 12.4 8 11l2.8 2.8L16 8.6 17.4 10l-6.6 6.6z"/></svg>
             <span>Exclude AV</span>
           </button>
-          <div class="manage-sep" role="separator"></div>
-          <button class="btn-uninstall manage-item danger" role="menuitem" id="btnUninstall">
+          <div class="manage-sep not-on-vanilla" role="separator"></div>
+          <button class="btn-uninstall manage-item danger not-on-vanilla" role="menuitem" id="btnUninstall">
             <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
             <span>Uninstall</span>
           </button>
@@ -400,7 +400,7 @@
             <span class="home-stat-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M21 3H3a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h5v2h8v-2h5a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm0 14H3V5h18v12zm-5.5-8.5L11 13l-2.5-2.5L7 12l4 4 6-6-1.5-1.5z"/></svg></span>
             <span class="home-stat-text">
               <span class="home-stat-value" id="qsInstalled">—</span>
-              <span class="home-stat-label">Game client</span>
+              <span class="home-stat-label" id="qsClientLabel">Game client</span>
             </span>
           </div>
         </div>
@@ -950,6 +950,10 @@
               <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z"/></svg>
               <span>Game folders</span>
             </button>
+            <button type="button" class="settings-nav-btn network-only-vanilla" role="tab" aria-selected="false" data-section="vanilla" id="setnav-vanilla" aria-controls="setpage-vanilla" tabindex="-1">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21.58 16.09l-1.09-7.66A3.996 3.996 0 0 0 16.53 5H7.47C5.48 5 3.79 6.46 3.51 8.43l-1.09 7.66C2.2 17.63 3.39 19 4.94 19c.68 0 1.32-.27 1.8-.75L9 16h6l2.25 2.25c.48.48 1.13.75 1.8.75 1.56 0 2.75-1.37 2.53-2.91zM11 11H9v2H8v-2H6v-1h2V8h1v2h2v1zm4-1c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1zm2 3c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1z"/></svg>
+              <span>Vanilla</span>
+            </button>
             <button type="button" class="settings-nav-btn network-only-accounts" role="tab" aria-selected="false" data-section="notifications" id="setnav-notifications" aria-controls="setpage-notifications" tabindex="-1">
               <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.89 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/></svg>
               <span>Notifications</span>
@@ -1255,11 +1259,11 @@
                   <img class="folder-logo" src="assets/vanilla-logo.png" alt="" />
                   <span class="folder-text">
                     <span class="sg-label">Vanilla</span>
-                    <span class="folder-path" id="cfgInstallDirVanilla">%APPDATA%\com.radium.launcher\client-vanilla</span>
+                    <span class="folder-path" id="cfgInstallDirVanilla">%APPDATA%\VanillaLauncher\Installs\Vanilla</span>
+                    <span class="sg-desc">Chosen in Vanilla's own launcher, which installs and updates the game.</span>
                   </span>
+                  <!-- No Change/Reset: the folder belongs to Vanilla's launcher. -->
                   <span class="folder-actions">
-                    <button type="button" class="btn-open-folder" data-change-folder="vanilla">Change</button>
-                    <button type="button" class="btn-open-folder" data-reset-folder="vanilla">Reset</button>
                     <button type="button" class="btn-open-folder" data-open-folder="vanilla">Open</button>
                   </span>
                 </div>
@@ -1274,6 +1278,77 @@
                     <button type="button" class="btn-open-folder" data-reset-folder="stella">Reset</button>
                     <button type="button" class="btn-open-folder" data-open-folder="stella">Open</button>
                   </span>
+                </div>
+              </div>
+            </div>
+
+            <!-- ── Vanilla (Vanilla only) ── -->
+            <!-- Vanilla's own launcher settings, changed through that launcher
+                 (see vanilla_launcher.rs). Filled in by refreshVanillaSettings(). -->
+            <div class="settings-page network-only-vanilla" id="setpage-vanilla" role="tabpanel" aria-labelledby="setnav-vanilla" hidden>
+              <div class="settings-page-head">
+                <h3 class="settings-page-title">Vanilla</h3>
+                <p class="settings-page-desc" id="vanillaSettingsDesc">Vanilla's game options. These are the same settings as in Vanilla's own launcher.</p>
+              </div>
+
+              <div class="settings-group" id="vanillaSettingsGroup">
+                <div class="sg-toggle-row">
+                  <span class="sg-text">
+                    <span class="sg-label">Discord Rich Presence</span>
+                    <span class="sg-desc">Shows what you're playing on Discord. Left on, it also shows while you play on Quest.</span>
+                  </span>
+                  <div class="toggle-wrap" id="tgl-vanilla-discordRpc" data-vanilla-setting="discordRpc"><div class="tgl-knob"></div></div>
+                </div>
+                <div class="sg-toggle-row">
+                  <span class="sg-text">
+                    <span class="sg-label">AppId Fix</span>
+                    <span class="sg-desc">Lets you play without Rec Room in your Steam library. Rec Room was free and has been taken off Steam.</span>
+                  </span>
+                  <div class="toggle-wrap" id="tgl-vanilla-appIdFix" data-vanilla-setting="appIdFix"><div class="tgl-knob"></div></div>
+                </div>
+                <div class="sg-toggle-row">
+                  <span class="sg-text">
+                    <span class="sg-label">Dark UI</span>
+                    <span class="sg-desc">A dark look for the game's menus. Experimental.</span>
+                  </span>
+                  <div class="toggle-wrap" id="tgl-vanilla-darkUi" data-vanilla-setting="darkUi"><div class="tgl-knob"></div></div>
+                </div>
+                <div class="sg-toggle-row">
+                  <span class="sg-text">
+                    <span class="sg-label">New Config UI</span>
+                    <span class="sg-desc">Vanilla's newer config screen in the game.</span>
+                  </span>
+                  <div class="toggle-wrap" id="tgl-vanilla-newConfigUi" data-vanilla-setting="newConfigUi"><div class="tgl-knob"></div></div>
+                </div>
+                <div class="sg-toggle-row">
+                  <span class="sg-text">
+                    <span class="sg-label">Quest Graphics</span>
+                    <span class="sg-desc">The game's Quest graphics, for lower-end PCs.</span>
+                  </span>
+                  <div class="toggle-wrap" id="tgl-vanilla-questGraphics" data-vanilla-setting="questGraphics"><div class="tgl-knob"></div></div>
+                </div>
+              </div>
+
+              <div class="settings-group">
+                <div class="sg-row">
+                  <span class="sg-text">
+                    <span class="sg-label">Vanilla's launcher</span>
+                    <span class="sg-desc" id="vanillaLauncherVersion">Not checked yet.</span>
+                  </span>
+                  <div class="sg-control">
+                    <button type="button" class="btn-test-server" id="btnVanillaLauncherCheck">Check for updates</button>
+                    <button type="button" class="btn-test-server" id="btnVanillaLauncherUpdate" hidden>Update</button>
+                  </div>
+                </div>
+                <div class="sg-row">
+                  <span class="sg-text">
+                    <span class="sg-label">Vanilla community</span>
+                    <span class="sg-desc">Their Discord, and a page to support the people who run Vanilla.</span>
+                  </span>
+                  <div class="sg-control">
+                    <button type="button" class="btn-test-server" id="btnVanillaDiscord">Discord</button>
+                    <button type="button" class="btn-test-server" id="btnVanillaSupport">Support Vanilla</button>
+                  </div>
                 </div>
               </div>
             </div>

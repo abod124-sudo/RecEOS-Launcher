@@ -206,13 +206,30 @@ fn in_client_dirs(exe: &str, dirs: &[String]) -> bool {
 }
 
 /// Every network's client folder: the only places a game this launcher
-/// installed, and so may watch or stop, can be running from.
+/// installed, and so may watch or stop, can be running from. Plus Vanilla's
+/// own launcher's game folder: Vanilla's PC build runs only from there (Play
+/// starts it through that launcher), so that's where to watch and stop it.
 fn client_dirs(app: &tauri::AppHandle) -> Vec<String> {
     let cfg = config::current(app);
-    config::Network::ALL
+    let mut dirs: Vec<String> = config::Network::ALL
         .into_iter()
         .map(|network| config::get_client_dir_for(app, &cfg, network))
-        .collect()
+        .collect();
+    dirs.extend(vanilla_launcher_game_dir());
+    dirs
+}
+
+/// The folder Vanilla's own launcher installs its game into:
+/// `<installDirectory>\Vanilla`, from the launcher's settings. Only that exact
+/// folder — never the whole install directory, which a user could point at a
+/// broad folder that also holds official Rec Room.
+pub(crate) fn vanilla_launcher_game_dir() -> Option<String> {
+    let data = std::path::PathBuf::from(std::env::var_os("APPDATA")?).join("VanillaLauncher");
+    let settings = std::fs::read_to_string(data.join("settings.json")).ok();
+    vanilla_game_candidates(settings.as_deref(), &data)
+        .into_iter()
+        .next()
+        .map(|dir| dir.to_string_lossy().to_string())
 }
 
 /// Whether a `PROCESSENTRY32W` image name matches any of `images`.
@@ -433,6 +450,286 @@ fn valid_room_name(name: &str) -> bool {
         && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
+/// Locate Vanilla's own launcher executable. Its installer puts it per-machine
+/// under Program Files, so look there (and the 32-bit Program Files) for
+/// `vanillalauncher.exe`. Returns the full path if it's present.
+#[cfg(target_os = "windows")]
+pub fn find_vanilla_launcher() -> Option<String> {
+    const REL: &str = r"Vanilla Launcher\vanillalauncher.exe";
+    for var in ["ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"] {
+        if let Ok(base) = std::env::var(var) {
+            let p = Path::new(&base).join(REL);
+            if p.is_file() {
+                return Some(p.to_string_lossy().to_string());
+            }
+        }
+    }
+    None
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn find_vanilla_launcher() -> Option<String> {
+    None
+}
+
+/// EXPERIMENTAL auto-play for Vanilla. Opens Vanilla's own launcher and then,
+/// through Windows UI Automation, presses its real "Play" button — so the
+/// launcher (signed in) does the actual launch and mints the anti-cheat session
+/// itself. Nothing is forged; this only automates a click the user would make.
+///
+/// It is best-effort: the launcher has several screens (sign-in, download,
+/// update, locate, play), and we only press a button named "Play" that is
+/// enabled and on-screen. If none appears within the window, the launcher is
+/// simply left open for the user to finish in (the same as the plain hand-off),
+/// and `autoplay` comes back `no_play`. WebView2 exposes its DOM to UI
+/// Automation only when accessibility is active, so the launcher is started
+/// with `--force-renderer-accessibility`.
+///
+/// Caveats worth keeping in mind: this drives another app's UI, so it can break
+/// when that UI changes, and an anti-cheat launcher could in principle treat
+/// outside automation as tampering — so it's experimental and should be tested
+/// on a throwaway account first.
+#[tauri::command]
+pub async fn autoplay_vanilla(app: tauri::AppHandle, mode: Option<String>) -> Result<Value, String> {
+    let Some(launcher) = find_vanilla_launcher() else {
+        return Ok(json!({ "success": false, "autoplay": "no_launcher" }));
+    };
+    // Only two modes exist in Vanilla's launcher; anything else is Screen.
+    let vr = mode.as_deref() == Some("vr");
+
+    #[cfg(target_os = "windows")]
+    {
+        let events = app.clone();
+        let (status, mode_set) =
+            tokio::task::spawn_blocking(move || run_vanilla_play_automation(&events, &launcher, vr))
+                .await
+                .map_err(|e| format!("Auto-play task failed: {}", e))??;
+        // Launch pressed: same "starting" state as our own launches, so Home
+        // shows STOP and the monitor waits for the game to appear before it
+        // would report it closed (see `start_game_monitor`).
+        if status == "invoked" {
+            GAME_SEEN_SINCE_LAUNCH.store(false, Ordering::SeqCst);
+            LAUNCH_GRACE_POLLS.store(GRACE_POLLS_AFTER_LAUNCH, Ordering::SeqCst);
+            GAME_RUNNING_STATE.store(true, Ordering::SeqCst);
+            let _ = app.emit("game-state", json!({ "running": true }));
+        }
+        Ok(json!({
+            "success": status != "no_launcher",
+            "autoplay": status,
+            "modeSet": mode_set,
+        }))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (app, launcher, vr);
+        Err("Auto-play is only supported on Windows.".into())
+    }
+}
+
+/// Folders where Vanilla's launcher keeps the game: `<installDirectory>\Vanilla`
+/// (its layout), then `<installDirectory>` itself. `installDirectory` falls back
+/// to `<launcher data>\Installs` when the settings are missing or unreadable.
+fn vanilla_game_candidates(settings: Option<&str>, launcher_data: &Path) -> Vec<std::path::PathBuf> {
+    let base = settings
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .and_then(|v| v.get("installDirectory")?.as_str().map(str::to_string))
+        .filter(|s| !s.trim().is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| launcher_data.join("Installs"));
+    vec![base.join("Vanilla"), base]
+}
+
+/// Final results the automation script can end with.
+#[cfg(target_os = "windows")]
+const VANILLA_AUTOPLAY_RESULTS: [&str; 7] = [
+    "invoked",
+    "needs_mode",
+    "no_play",
+    "no_launcher",
+    "needs_client",
+    "needs_update",
+    "needs_busy",
+];
+
+/// Start Vanilla's launcher if it isn't already running and press its Play
+/// button via UI Automation. While it runs, each launcher screen it recognises
+/// (`signin`, `client`, `update`, `busy`) is sent to the UI as a
+/// `vanilla-autoplay` event. Returns `"invoked"`, `"needs_client"` (signed in
+/// but the game isn't installed in the launcher), `"needs_update"`,
+/// `"needs_busy"` (the launcher is downloading/updating the game), or
+/// `"no_play"` (no Play button in time — e.g. never signed in). Blocking: polls
+/// for up to ~45s, or ~5 min while a sign-in screen is up.
+#[cfg(target_os = "windows")]
+fn run_vanilla_play_automation(
+    app: &tauri::AppHandle,
+    launcher: &str,
+    vr: bool,
+) -> Result<(String, bool), String> {
+    use std::io::{BufRead, BufReader};
+    use std::os::windows::process::CommandExt;
+    use std::process::Stdio;
+
+    // Single-quoted PowerShell string; double any quote in the path.
+    let safe_path = launcher.replace('\'', "''");
+    let script = format!("{}{}", crate::vanilla_launcher::UIA_PRELUDE, VANILLA_PLAY_PS)
+        .replace("__LAUNCHER_PATH__", &safe_path)
+        .replace("__MODE__", if vr { "vr" } else { "screen" });
+
+    let mut child = Command::new(crate::defender::get_powershell_path())
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
+        .spawn()
+        .map_err(|e| format!("Couldn't run the launcher automation: {}", e))?;
+
+    let mut result = "no_play".to_string();
+    let mut mode_set = false;
+    if let Some(stdout) = child.stdout.take() {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            let line = line.trim();
+            if let Some(state) = line.strip_prefix("state:") {
+                let _ = app.emit("vanilla-autoplay", state);
+            } else if line == "mode:set" {
+                mode_set = true;
+            } else if VANILLA_AUTOPLAY_RESULTS.contains(&line) {
+                result = line.to_string();
+            }
+        }
+    }
+    let _ = child.wait();
+    Ok((result, mode_set))
+}
+
+/// The UI Automation routine, run via PowerShell. Starts the launcher (with
+/// WebView2 accessibility forced on) if it isn't up, then for ~45s looks across
+/// the launcher's WebView2 child windows for its Launch control, picks the
+/// wanted Screen/VR mode, and presses Launch. `__LAUNCHER_PATH__` and
+/// `__MODE__` are filled in by [`run_vanilla_play_automation`].
+#[cfg(target_os = "windows")]
+const VANILLA_PLAY_PS: &str = r#"
+# Helpers (Find-LauncherWindow, Restore-LauncherWindow, …) come from
+# vanilla_launcher::UIA_PRELUDE, prepended by run_vanilla_play_automation.
+if (-not (Test-LauncherUp)) { Start-Launcher }
+
+# 45s to reach a Play button; extended to 5 min once a sign-in screen shows, so
+# the user can sign in and we press Play right after.
+$deadline = (Get-Date).AddSeconds(45)
+$status = 'no_play'
+$top = [IntPtr]::Zero
+$last = ''; $seen = 0
+
+# Play mode wanted by Rec EOS. The launcher has a Screen/VR choice once the game
+# is installed; we pick it (a switch named for the mode, or a Play button that
+# names it) before pressing Play, and never press a Play that names the other mode.
+$want = '__MODE__'
+$vrRx = '(?i)\b(vr|virtual reality)\b'
+$scRx = '(?i)\b(screen|desktop|flat|2d)\b'
+if ($want -eq 'vr') { $wantRx = $vrRx; $otherRx = $scRx } else { $wantRx = $scRx; $otherRx = $vrRx }
+$modeCtlRx = if ($want -eq 'vr') { '(?i)^(vr|vr mode|virtual reality)$' } else { '(?i)^(screen|screen mode|desktop|desktop mode|flat)$' }
+$playRx = '(?i)^[^a-z]*(play|launch)\b[^a-z]*((in\s+)?(vr|virtual reality|screen|desktop|flat|2d)(\s+mode)?)?[^a-z]*$'
+$ctlTypes = 'ControlType.Button','ControlType.RadioButton','ControlType.TabItem','ControlType.ListItem','ControlType.MenuItem','ControlType.CheckBox'
+$modeSet = $false; $modeTries = 0; $otherOnly = 0
+# The launcher's game page (seen with the game installed): a clickable
+# `launch-bar` group holding the text "Launch", a "Launch mode" group with VR /
+# Screen buttons (the chosen one has class `is-selected`), and Uninstall. The
+# text itself isn't clickable, so Clickable-Ancestor presses the bar.
+$script:vrOff = $false
+function Pick-Mode($e) {
+  if ($script:vrOff) {
+    try { $p = $e.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern); if ($p.Current.ToggleState -ne 'Off') { $p.Toggle() }; return $true } catch { return $false }
+  }
+  try { $p = $e.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern); if (-not $p.Current.IsSelected) { $p.Select() }; return $true } catch {}
+  try { $p = $e.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern); if ($p.Current.ToggleState -ne 'On') { $p.Toggle() }; return $true } catch {}
+  try { $e.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke(); return $true } catch {}
+  return $false
+}
+while ((Get-Date) -lt $deadline) {
+  $top = Find-LauncherWindow
+  if ($top -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 1000; continue }
+  Restore-LauncherWindow $top
+  $playWant = $null; $playPlain = $null; $playOther = $null; $modeCtl = $null
+  $signin = $false; $client = $false; $update = $false; $busy = $false; $loading = $false
+  $wantSelected = $false; $markerSeen = $false
+  foreach ($all in @(,(Get-LauncherElements $top))) {
+    try {
+      foreach ($e in $all) {
+        $c = $e.Current
+        $n = "$($c.Name)".Trim()
+        $type = $c.ControlType.ProgrammaticName
+        $usable = $c.IsEnabled -and -not $c.IsOffscreen
+        if ($type -eq 'ControlType.Button' -and $usable -and $n -match $playRx) {
+          if ($n -match $wantRx) { $playWant = $e } elseif ($n -match $otherRx) { $playOther = $e } else { $playPlain = $e }
+        }
+        elseif ($type -eq 'ControlType.Text' -and $usable -and $n -match '(?i)^(launch|play)$' -and -not $playPlain) {
+          $bar = Clickable-Ancestor $e
+          if ($bar) { $playPlain = $bar }
+        }
+        elseif ($usable -and $ctlTypes -contains $type -and $n -match $modeCtlRx) {
+          $modeCtl = $e
+          if ("$($c.ClassName)" -match '(^|\s)is-selected(\s|$)') { $wantSelected = $true }
+        }
+        if ($type -eq 'ControlType.Button' -and $n -match '(?i)^(vr|screen)$' -and "$($c.ClassName)" -match '(^|\s)is-selected(\s|$)') { $markerSeen = $true }
+        # A lone "VR" on/off switch: for Screen, the "switch" is turning it off.
+        elseif ($usable -and $want -ne 'vr' -and $type -eq 'ControlType.CheckBox' -and $n -match '(?i)^(vr|vr mode)$') { $modeCtl = $e; $script:vrOff = $true }
+        # Login screen: Username/Password boxes + "Login" button. With "Remember
+        # me" it shows ~3s under a "Loading" group while it signs in by itself.
+        if ($c.IsPassword -or $n -match '(?i)^(sign|log)\s?in\b|^login$|^continue with') { $signin = $true }
+        if ($n -eq 'Loading') { $loading = $true }
+        if ($n -match '(?i)^(locate installation|download|install)$') { $client = $true }
+        if ($n -match '(?i)^update( now| game)?$') { $update = $true }
+        if ($n -match '(?i)^(downloading|installing|updating|verifying|extracting)\b') { $busy = $true }
+      }
+    } catch {}
+  }
+  # Select the wanted mode first (then press Play on the next pass, once the
+  # launcher has updated), unless a Play button already names it.
+  # When the launcher marks the chosen mode (`is-selected`), that is the truth
+  # each pass; a switch without a marker counts as set once picked.
+  if ($markerSeen) { $modeSet = $wantSelected }
+  if (-not $playWant -and $modeCtl -and -not $modeSet -and $modeTries -lt 3) {
+    $modeTries++
+    if ((Pick-Mode $modeCtl) -and -not $markerSeen) { $modeSet = $true }
+    Start-Sleep -Milliseconds 700
+    continue
+  }
+  # Mode switch present but the pick never took: don't launch the wrong mode.
+  if ($modeCtl -and -not $modeSet) { Show-Launcher $top; $status = 'needs_mode'; break }
+  $play = $null
+  if ($playWant) { $play = $playWant; $modeSet = $true }
+  elseif ($playPlain) { $play = $playPlain }
+  if ($play) {
+    try {
+      # Not minimised afterwards: the launcher would save the minimised size
+      # (160x28) as its window size. The game's window covers it anyway.
+      $play.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+      if ($modeSet) { Say 'mode:set' }
+      $status = 'invoked'
+      break
+    } catch {}
+  }
+  # Only a Play for the other mode, and no way to switch: leave it to the user.
+  if ($playOther -and -not $play) {
+    $otherOnly++
+    if ($otherOnly -ge 3) { Show-Launcher $top; $status = 'needs_mode'; break }
+  }
+  $state = if ($loading) { '' } elseif ($signin) { 'signin' } elseif ($busy) { 'busy' } elseif ($update) { 'update' } elseif ($client) { 'client' } else { '' }
+  if ($state -eq $last) { $seen++ } else { $seen = 1; $last = $state }
+  # Act on a screen only once it has held (skips loading flicker); the login
+  # form gets longer, since it's also shown briefly during auto sign-in.
+  $need = if ($state -eq 'signin') { 4 } else { 2 }
+  if ($state -and $seen -eq $need) {
+    Say "state:$state"
+    Show-Launcher $top
+    if ($state -eq 'signin') { $deadline = (Get-Date).AddMinutes(5) }
+    else { $status = "needs_$state"; break }
+  }
+  Start-Sleep -Milliseconds 1000
+}
+if ($status -eq 'no_play') { Show-Launcher $top }
+Say $status
+"#;
+
 fn launch_game_impl(
     app: tauri::AppHandle,
     config: serde_json::Value,
@@ -450,6 +747,39 @@ fn launch_game_impl(
 
     // 3. Resolve client directory + game executable for the selected network
     let network = config::Network::parse(config.get("network").and_then(|v| v.as_str()));
+
+    // Vanilla's PC build is an anti-cheat'd client that only runs when
+    // Vanilla's own launcher starts it: the launcher (with the user signed in)
+    // creates a one-time signed session the game checks for on startup, and
+    // starting RecRoom.exe any other way fails with an anti-cheat violation.
+    // So "Play" on Vanilla hands off to that launcher instead of spawning the
+    // game — it opens, the user plays from there, and Rec EOS never starts the
+    // Vanilla game itself. (When Vanilla give us a launch command we can pass
+    // it here for a one-click start.)
+    if network == config::Network::Vanilla {
+        let Some(launcher) = find_vanilla_launcher() else {
+            return Err(
+                "Vanilla's launcher isn't installed. Install the Vanilla Launcher first, \
+                 then press Play again."
+                    .into(),
+            );
+        };
+        let work_dir = Path::new(&launcher)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let mut cmd = Command::new(&launcher);
+        cmd.current_dir(&work_dir);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x00000008); // DETACHED_PROCESS
+        }
+        cmd.spawn()
+            .map_err(|e| format!("Couldn't open Vanilla's launcher: {}", e))?;
+        return Ok(json!({ "success": true, "handoff": "vanilla-launcher" }));
+    }
+
     let cfg = config::current(&app);
     let client_dir = config::get_client_dir_for(&app, &cfg, network);
 
@@ -887,6 +1217,34 @@ mod process_snapshot_tests {
         let buf = [b'a' as u16; 260];
         assert!(!image_name_matches(&buf, &["a.exe"]));
         assert!(image_name_matches(&buf, &["a".repeat(260).as_str()]));
+    }
+}
+
+#[cfg(test)]
+mod vanilla_game_folder_tests {
+    use super::vanilla_game_candidates;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn uses_the_launchers_saved_install_directory() {
+        let s = r#"{ "installDirectory": "D:\\Games\\Vanilla Installs", "installedVersions": {} }"#;
+        let got = vanilla_game_candidates(Some(s), Path::new("C:\\data"));
+        assert_eq!(
+            got,
+            vec![
+                PathBuf::from("D:\\Games\\Vanilla Installs").join("Vanilla"),
+                PathBuf::from("D:\\Games\\Vanilla Installs"),
+            ]
+        );
+    }
+
+    #[test]
+    fn falls_back_to_installs_when_settings_are_missing_or_bad() {
+        let data = Path::new("C:\\data");
+        let want = vec![data.join("Installs").join("Vanilla"), data.join("Installs")];
+        assert_eq!(vanilla_game_candidates(None, data), want);
+        assert_eq!(vanilla_game_candidates(Some("not json"), data), want);
+        assert_eq!(vanilla_game_candidates(Some(r#"{"installDirectory":"  "}"#), data), want);
     }
 }
 

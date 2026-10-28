@@ -1678,6 +1678,13 @@ body.network-vanilla .status-dot.unknown {
 
 /* Install-gated pieces. Gated from <body> rather than from one container, so
    they can sit wherever the layout wants them. */
+/* Rec EOS downloads and updates Vanilla's game into Vanilla's launcher's folder,
+   but verify / reinstall / exclude / uninstall (all aimed at Rec EOS's own
+   client folders) don't apply there. Every skin, so !important — and by #manageMenu,
+   to outrank `#manageMenu .manage-item { display: flex !important }`. */
+body.network-vanilla .not-on-vanilla,
+body.network-vanilla #manageMenu .not-on-vanilla { display: none !important; }
+
 .installed-only { display: none; }
 body.client-installed .installed-only { display: flex; }
 .not-installed-only { display: none; }

@@ -20,6 +20,8 @@ pub mod updater;
 pub mod verify;
 pub mod vanilla;
 pub mod vanilla_auth;
+pub mod vanilla_game;
+pub mod vanilla_launcher;
 
 use tauri::Manager;
 
@@ -141,6 +143,7 @@ pub fn run() {
             download::uninstall_client,
             download::check_install,
             download::check_client_update,
+            download::install_vanilla_launcher,
             download::open_client_folder,
             download::select_folder,
             download::get_default_client_dir,
@@ -149,6 +152,12 @@ pub fn run() {
             verify::repair_client,
             // Game
             game::launch_game,
+            game::autoplay_vanilla,
+            vanilla_launcher::vanilla_launcher_settings,
+            vanilla_launcher::set_vanilla_launcher_setting,
+            vanilla_launcher::open_vanilla_install_folder,
+            vanilla_launcher::vanilla_launcher_update_status,
+            vanilla_launcher::update_vanilla_launcher,
             game::kill_game,
             game::check_game_running,
             game::check_steam,

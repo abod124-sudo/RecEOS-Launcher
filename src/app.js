@@ -213,8 +213,9 @@ const NETWORKS = {
     hasFeed: false,
     hasPresence: false,
     hasPhotoFeed: true,
-    // Vanilla has not shipped a client; the URL comes from Settings.
-    needsConfiguredDownloadUrl: true
+    // Rec EOS downloads Vanilla's game from Vanilla's file server once
+    // Vanilla's launcher is installed (see clientDownloadAvailable).
+    needsConfiguredDownloadUrl: false
   },
   stella: {
     label: 'STELLA',
@@ -313,6 +314,7 @@ function syncAvState(network, excluded, dirs) {
 /// Placeholder for the log/modal text before checkInstall() has resolved the
 /// real path. Per-network, since each defaults to its own folder.
 function defaultInstallDirHint(network = activeNetwork) {
+  if (network === 'vanilla') return '%APPDATA%\\VanillaLauncher\\Installs\\Vanilla';
   const folder = network === 'radium' ? 'client' : `client-${network}`;
   return `%APPDATA%\\com.radium.launcher\\${folder}`;
 }
@@ -345,6 +347,16 @@ async function refreshInstallDirRows() {
   for (const network of Object.keys(NETWORKS)) {
     const span = installDirSpan(network);
     if (!span) continue;
+    if (network === 'vanilla') {
+      // Where Vanilla's own launcher keeps the game, not a Rec EOS folder.
+      try {
+        const s = await window.radium?.vanillaLauncherSettings();
+        if (s?.gameDirectory) span.textContent = s.gameDirectory;
+      } catch (e) {
+        console.error('vanillaLauncherSettings error:', e);
+      }
+      continue;
+    }
     let dir = '';
     try {
       dir = await window.radium?.resolveClientDir(network, configInstallDir(network));
@@ -445,6 +457,7 @@ function withoutBackdrop(cfg) {
 
     // Download
     downloadClient:  () => invoke('download_client', { network: activeNetwork }),
+    installVanillaLauncher: () => invoke('install_vanilla_launcher'),
     cancelDownload:  () => invoke('cancel_download', { network: activeNetwork }),
     pauseDownload:   () => invoke('pause_download'),
     resumableDownloadInfo: () => invoke('resumable_download_info', { network: activeNetwork }),
@@ -503,6 +516,12 @@ function withoutBackdrop(cfg) {
 
     // Game
     launchGame: (cfg) => invoke('launch_game', { config: { ...cfg, network: activeNetwork } }),
+    autoplayVanilla: (mode) => invoke('autoplay_vanilla', { mode }),
+    vanillaLauncherSettings: () => invoke('vanilla_launcher_settings'),
+    setVanillaLauncherSetting: (name, value) => invoke('set_vanilla_launcher_setting', { name, value }),
+    openVanillaInstallFolder: () => invoke('open_vanilla_install_folder'),
+    vanillaLauncherUpdateStatus: () => invoke('vanilla_launcher_update_status'),
+    updateVanillaLauncher: () => invoke('update_vanilla_launcher'),
     killGame:   ()    => invoke('kill_game'),
     onGameState: async (cb) => {
       if (unlistenMap['game-state']) unlistenMap['game-state']();
@@ -1569,6 +1588,9 @@ document.querySelectorAll('.sidebar-nav .nav-btn').forEach(btn => {
       refreshStellaFriends();
     } else if (tabName === 'chats') {
       loadChatThreads();
+    } else if (tabName === 'settings' && settingsSection === 'vanilla') {
+      // They may have been changed in Vanilla's own launcher meanwhile.
+      refreshVanillaSettings();
     }
   });
 });
@@ -2060,7 +2082,75 @@ function showSettingsSection(name, { focus = false } = {}) {
     if (body) body.scrollTop = 0;
   }
   if (focus) btn.focus();
+  if (settingsSection === 'vanilla' && changed) refreshVanillaSettings();
 }
+
+// ── Vanilla's launcher settings (Settings → Vanilla) ────────────────────
+// They belong to Vanilla's own launcher; the backend changes them there (or in
+// its settings file while it's closed), so these switches only mirror it.
+
+const VANILLA_SETTING_TOGGLES = [...document.querySelectorAll('[data-vanilla-setting]')];
+const VANILLA_LINKS = {
+  discord: 'https://discord.gg/vanillarec',
+  support: 'https://ko-fi.com/vanillarecnet',
+};
+
+function applyVanillaSettings(s) {
+  const installed = !!s?.installed;
+  for (const el of VANILLA_SETTING_TOGGLES) {
+    setToggle(el.id, !!s?.values?.[el.dataset.vanillaSetting]);
+    el.classList.toggle('is-unavailable', !installed);
+  }
+  // Hidden rather than dimmed: dimming small controls leaves artifacts.
+  const group = $('vanillaSettingsGroup');
+  if (group) group.hidden = !installed;
+  const desc = $('vanillaSettingsDesc');
+  if (desc) {
+    desc.textContent = installed
+      ? "Vanilla's game options. These are the same settings as in Vanilla's own launcher."
+      : "Install Vanilla's launcher (GET VANILLA on Home) to change these.";
+  }
+}
+
+async function refreshVanillaSettings() {
+  try {
+    applyVanillaSettings(await window.radium?.vanillaLauncherSettings());
+  } catch (e) {
+    addLog(`Couldn't read Vanilla's settings: ${e}`, 'error');
+  }
+  applyVanillaLauncherUpdateRow(vanillaLauncherUpdate);
+}
+
+$('btnVanillaLauncherCheck')?.addEventListener('click', async () => {
+  const b = $('btnVanillaLauncherCheck');
+  if (b?.dataset.pending === 'true') return;
+  if (b) b.dataset.pending = 'true';
+  try { await checkVanillaLauncherUpdate({ manual: true }); } finally { if (b) b.dataset.pending = 'false'; }
+});
+$('btnVanillaLauncherUpdate')?.addEventListener('click', () => installVanillaLauncher({ update: true }));
+
+for (const el of VANILLA_SETTING_TOGGLES) {
+  el.addEventListener('click', async () => {
+    if (el.dataset.pending === 'true' || el.classList.contains('is-unavailable')) return;
+    el.dataset.pending = 'true';
+    const name = el.dataset.vanillaSetting;
+    const want = !getToggle(el.id);
+    setToggle(el.id, want);
+    try {
+      applyVanillaSettings(await window.radium.setVanillaLauncherSetting(name, want));
+      const label = el.closest('.sg-toggle-row')?.querySelector('.sg-label')?.textContent || name;
+      addLog(`Vanilla: ${label} turned ${want ? 'on' : 'off'}.`, 'info');
+    } catch (err) {
+      setToggle(el.id, !want);
+      toast(String(err), 'error', 5000);
+    } finally {
+      el.dataset.pending = 'false';
+    }
+  });
+}
+
+$('btnVanillaDiscord')?.addEventListener('click', () => window.radium?.openUrl(VANILLA_LINKS.discord));
+$('btnVanillaSupport')?.addEventListener('click', () => window.radium?.openUrl(VANILLA_LINKS.support));
 
 document.querySelectorAll('.settings-nav-btn').forEach(btn => {
   btn.addEventListener('click', () => showSettingsSection(btn.dataset.section));
@@ -3125,6 +3215,46 @@ function logInstallState(kind, msg, level) {
 /// as the client stayed outdated. Keyed by network and build, so switching
 /// network, or a new install that is still outdated, asks again.
 let outdatedPromptKey = '';
+/// Vanilla's own launcher is installed (set by checkInstall on Vanilla).
+let vanillaLauncherInstalled = false;
+/// The last launcher update check: `{ installedVersion, latestVersion,
+/// updateAvailable }`, or null before one has run.
+let vanillaLauncherUpdate = null;
+let vanillaLauncherUpdateChecked = false;
+
+/// Ask whether Vanilla's launcher has an update. Automatic once a session (from
+/// checkInstall); `manual` from Settings → Vanilla always asks and says so.
+async function checkVanillaLauncherUpdate({ manual = false } = {}) {
+  if (!vanillaLauncherInstalled) return;
+  let s = null;
+  try { s = await window.radium?.vanillaLauncherUpdateStatus(); } catch (e) { s = { success: false, error: String(e) }; }
+  if (!s?.success) {
+    if (manual) toast(`Couldn't check for a launcher update: ${s?.error || 'unknown error'}`, 'error', 5000);
+    applyVanillaLauncherUpdateRow(s);
+    return;
+  }
+  const wasKnown = vanillaLauncherUpdate?.updateAvailable;
+  vanillaLauncherUpdate = s;
+  applyVanillaLauncherUpdateRow(s);
+  if (s.updateAvailable && (manual || !wasKnown)) {
+    addLog(`Vanilla's launcher has an update: v${s.installedVersion} → v${s.latestVersion}. Update it from Settings → Vanilla.`, 'warn', 'install');
+    toast(`Vanilla's launcher has an update (v${s.latestVersion}). Settings → Vanilla → Update.`, 'info', 7000);
+  } else if (manual) {
+    toast(`Vanilla's launcher is up to date (v${s.installedVersion}).`, 'ok', 3000);
+  }
+}
+
+function applyVanillaLauncherUpdateRow(s) {
+  const desc = $('vanillaLauncherVersion');
+  const btn = $('btnVanillaLauncherUpdate');
+  if (desc) {
+    desc.textContent = !s ? 'Not checked yet.'
+      : !s.success ? `v${s.installedVersion || '?'} — couldn't check for updates.`
+      : s.updateAvailable ? `v${s.installedVersion} installed — v${s.latestVersion} is available.`
+      : `v${s.installedVersion} — up to date.`;
+  }
+  if (btn) btn.hidden = !s?.updateAvailable;
+}
 
 async function checkInstall() {
   const network = activeNetwork;
@@ -3144,6 +3274,12 @@ async function checkInstall() {
   if (result) syncAvState(network, result.avExcluded, result.defenderDirs);
   isInstalled = result?.installed ?? false;
   needsRepair = !isInstalled && !!result?.needsRepair;
+  // Vanilla: the game needs Vanilla's launcher (GET VANILLA) before DOWNLOAD.
+  vanillaLauncherInstalled = network === 'vanilla' && !!result?.launcherInstalled;
+  if (vanillaLauncherInstalled && !vanillaLauncherUpdateChecked) {
+    vanillaLauncherUpdateChecked = true;
+    checkVanillaLauncherUpdate();
+  }
   if (result?.patchDir) stellaPatchDir = result.patchDir;
   const qscC = $('qsc-client');
   // Only the active network's row: `result` describes the network checkInstall
@@ -3183,7 +3319,11 @@ async function checkInstall() {
     const verLabel = result?.clientVersion ? `v${result.clientVersion}` : 'unknown version';
     // The build id is only tracked on Radium; elsewhere it's a leftover Radium id.
     const buildLabel = activeNetwork === 'radium' ? `, build ${result?.clientBuild || 'unrecorded'}` : '';
-    logInstallState('client', `Game client found (${verLabel}${buildLabel}): ${result.exePath || 'client dir'}`, 'ok');
+    if (activeNetwork === 'vanilla') {
+      logInstallState('client', `Vanilla ${verLabel} found: ${result.exePath || 'installed'}`, 'ok');
+    } else {
+      logInstallState('client', `Game client found (${verLabel}${buildLabel}): ${result.exePath || 'client dir'}`, 'ok');
+    }
 
     // Check if the game is already running on startup. Only log the transition:
     // checkInstall() re-runs on every settings autosave, so logging every time
@@ -3239,6 +3379,11 @@ async function checkInstall() {
     if (needsRepair) {
       if (qi) qi.textContent = 'NEEDS REPAIR';
       logInstallState('client', `${networkInfo().label} is installed but missing files, including the game itself. Press REPAIR to check every file and get the missing ones back.`, 'warn');
+    } else if (activeNetwork === 'vanilla') {
+      // Vanilla's launcher first (GET VANILLA); then Rec EOS downloads the game.
+      logInstallState('client', vanillaLauncherInstalled
+        ? "Vanilla isn't downloaded yet — press DOWNLOAD."
+        : "Vanilla's launcher isn't installed — press GET VANILLA to install it.", 'info');
     } else if (!clientDownloadAvailable()) {
       if (qi) qi.textContent = 'Not released yet';
       logInstallState('client', `${networkInfo().label} has not published a client yet.`, 'info');
@@ -3253,17 +3398,19 @@ async function checkInstall() {
   if (!isInstalled) stellaPatch = null;
   applyStellaPatchUI();
   updateDownloadCta();
+  // On Vanilla, until its launcher is installed that's what the card is about.
+  const ql = $('qsClientLabel');
+  if (ql) ql.textContent = activeNetwork === 'vanilla' && !vanillaLauncherInstalled ? 'Vanilla launcher' : 'Game client';
 }
 
 /// Whether the active network has something the launcher can actually install.
 ///
-/// Vanilla has published no client, so this is false and its hero button opens
-/// their download page instead. The install pipeline behind it is complete and
-/// keyed on `config.vanilla.clientUrl`; there is deliberately no UI for that
-/// field while there is nothing to point it at, so it is set in config.json (or
-/// a Settings row is added back) once Vanilla ships a build.
+/// Vanilla's game only runs when Vanilla's own launcher starts it (its
+/// anti-cheat), so that launcher comes first (GET VANILLA); once it's there,
+/// Rec EOS downloads the game files itself (vanilla_game.rs).
 function clientDownloadAvailable() {
   const info = networkInfo();
+  if (activeNetwork === 'vanilla') return vanillaLauncherInstalled;
   if (!info.needsConfiguredDownloadUrl) return true;
   return !!(config?.vanilla?.clientUrl || '').trim();
 }
@@ -3288,10 +3435,12 @@ function updateDownloadCta() {
     btn.textContent = available ? '\u2b07 DOWNLOAD' : `\u2b07 GET ${info.label}`;
   }
   if (note) {
-    note.style.display = available ? 'none' : 'block';
-    note.textContent = available
-      ? ''
-      : `${info.label} hasn't released a client yet. This opens their download page.`;
+    const vanillaNote = activeNetwork !== 'vanilla' ? ''
+      : available
+        ? "Downloads Vanilla (about 7.7 GB). Vanilla's launcher then checks the files and starts the game with its anti-cheat."
+        : "Vanilla's anti-cheat runs through Vanilla's own launcher. This installs it — then download the game here.";
+    note.style.display = available && !vanillaNote ? 'none' : 'block';
+    note.textContent = vanillaNote || (available ? '' : `${info.label} hasn't released a client yet. This opens their download page.`);
   }
 }
 
@@ -3599,6 +3748,91 @@ function updateDlProgress({ phase, pct = 0, downloaded = 0, total = 0, speed = 0
   if (etaEl)    etaEl.textContent    = eta >= 0 ? formatEta(eta) : '—';
 }
 
+// Install Vanilla's launcher in-app. The game runs only through Vanilla's
+// launcher (anti-cheat), so this is the "GET VANILLA" path: the backend reads
+// the latest installer from Vanilla's update manifest, downloads it with
+// progress here, verifies it against Vanilla's key, and starts msiexec. The
+// user clicks through the normal install; then the launcher appears and Home
+// flips to PLAY. On failure we fall back to opening their download page.
+async function installVanillaLauncher({ update = false } = {}) {
+  if (isDownloading) return;
+  if (update && (isGameRunning || isGameLaunching)) {
+    toast("Close the game before updating Vanilla's launcher.", 'info', 4000);
+    return;
+  }
+  const info = networkInfo();
+  switchTab('home');
+
+  const ds = $('downloadSection'); if (ds) ds.style.display = 'flex';
+  document.body.classList.remove('client-installed');
+  closeManageMenu();
+
+  setDownloadUI(true);
+  setDlStepLabels('Download', 'Install', 'Done');
+  addLog(update
+    ? "Updating Vanilla's launcher: closing it and downloading the latest from vanillarec.net..."
+    : "Downloading Vanilla's launcher (latest from vanillarec.net)...", 'info', 'install');
+  toast(update ? "Updating Vanilla's launcher..." : "Downloading Vanilla's launcher...", 'info', 2500);
+
+  let result = null;
+  try {
+    result = await (update ? window.radium?.updateVanillaLauncher() : window.radium?.installVanillaLauncher());
+  } catch (e) {
+    console.error('installVanillaLauncher error:', e);
+    result = { success: false, error: e.toString() };
+  }
+
+  // The in-flight call settled, so clear the Cancel "cancelling…" latch
+  // (runClientDownload does the same once its download unwinds).
+  isCancelling = false;
+  setDownloadUI(false);
+  setDlStepLabels();
+
+  if (result?.success) {
+    addLog(`Vanilla Launcher ${result.version || ''} downloaded — finish the install in the window that opened.`.replace('  ', ' '), 'ok', 'install');
+    toast(update ? "Installer opened — finish it to update Vanilla's launcher." : 'Installer opened — finish it, then download the game here.', 'ok', 5000);
+    if (update) vanillaLauncherUpdate = null;
+    // The launcher only lands once the user clicks through the MSI (with a UAC
+    // prompt), so poll install state for a couple of minutes to flip Home to
+    // PLAY on its own.
+    pollForVanillaLauncher();
+  } else {
+    const err = result?.error || 'Unknown error';
+    if (err === 'Cancelled') {
+      // User pressed Cancel — not a failure, so no error toast and no
+      // download-page fallback. Restore the correct panel.
+      addLog('Cancelled the Vanilla launcher download.', 'info', 'install');
+      await checkInstall();
+      return;
+    }
+    addLog(`Couldn't ${update ? 'update' : 'install'} Vanilla's launcher: ${err}`, 'error', 'install');
+    toast(`${update ? 'Update' : 'Install'} failed: ${err}`, 'error', 6000);
+    // Still give the user a way through.
+    addLog(`Opening ${info.downloadPage} so you can install it manually.`, 'info', 'install');
+    window.radium?.openUrl(info.downloadPage);
+    await checkInstall();
+  }
+}
+
+// Re-check install state every few seconds after the installer starts, so Home
+// flips from GET VANILLA to PLAY once the launcher is installed — without the
+// user having to switch away and back. Stops on success, network switch, or
+// after ~2 minutes.
+let vanillaInstallPoll = null;
+function pollForVanillaLauncher() {
+  if (vanillaInstallPoll) clearInterval(vanillaInstallPoll);
+  let tries = 0;
+  const stop = () => { clearInterval(vanillaInstallPoll); vanillaInstallPoll = null; };
+  vanillaInstallPoll = setInterval(async () => {
+    tries += 1;
+    if (activeNetwork !== 'vanilla' || tries > 40) { stop(); return; }
+    // Checked first, then stopped: the install hid Home's installed panel, so
+    // even a launcher that was already there (a reinstall) needs this re-check.
+    await checkInstall();
+    if (vanillaLauncherInstalled) stop();
+  }, 3000);
+}
+
 async function runClientDownload({ resuming = false } = {}) {
   if (isDownloading) return;
 
@@ -3618,7 +3852,7 @@ async function runClientDownload({ resuming = false } = {}) {
   } else {
     addLog({
       radium: 'Starting download from recroom.baby (downloads page)...',
-      vanilla: 'Starting download from the configured Vanilla client URL...',
+      vanilla: "Downloading Vanilla from Vanilla's file server (cdn.vanillarec.net, about 7.7 GB)...",
       // Sent without a length, so the bar can't show a percentage.
       stella: "Starting download from Stella (about 4.7 GB; Stella's server doesn't send the size)...",
       receos: 'Starting download of the Rec EOS client from MediaFire (about 3.1 GB)...',
@@ -3642,9 +3876,24 @@ async function runClientDownload({ resuming = false } = {}) {
   const elapsed = ((Date.now() - dlStart) / 1000).toFixed(1);
   if (result?.success) {
     setDownloadUI(false);
-    addLog(`Download & extraction complete in ${elapsed}s.`, 'ok', 'install');
-    addLog(`Exe: ${result.exePath || 'Found in client dir'}`, 'ok', 'install');
-    toast(`${networkInfo().label} client installed!`, 'ok', 4000);
+    if (activeNetwork === 'vanilla') {
+      lastVanillaSignOff = !!result.signedOff;
+      addLog(`Vanilla ${result.version || ''} downloaded in ${elapsed}s (${result.downloadedFiles ?? 0} files fetched, the rest already there).`, 'ok', 'install');
+      if (result.signedOff) {
+        addLog("Vanilla's launcher checked the files and recorded the install.", 'ok', 'install');
+        toast('Vanilla is ready — press Play!', 'ok', 4000);
+      } else if (result.signOff === 'needs_signin') {
+        addLog("Sign in to Vanilla's launcher, then press PLAY — it finishes checking the files then.", 'warn', 'install');
+        toast("Sign in to Vanilla's launcher to finish.", 'info', 6000);
+      } else {
+        addLog(`Vanilla's launcher hasn't finished checking the files: ${result.signOff || 'unknown'}`, 'warn', 'install');
+        toast("Downloaded. Finish in Vanilla's launcher (it's checking the files).", 'info', 6000);
+      }
+    } else {
+      addLog(`Download & extraction complete in ${elapsed}s.`, 'ok', 'install');
+      addLog(`Exe: ${result.exePath || 'Found in client dir'}`, 'ok', 'install');
+      toast(`${networkInfo().label} client installed!`, 'ok', 4000);
+    }
     // Stella: the install also fetched the patch, installing it if it was a
     // checked build. Either way the next checkInstall() asks afresh, so a
     // patch still to accept shows up as UPDATE straight away.
@@ -3708,6 +3957,11 @@ $('btnDownload')?.addEventListener('click', () => {
   // instead of starting a download that would immediately fail.
   if (!clientDownloadAvailable()) {
     const info = networkInfo();
+    // Vanilla installs its launcher in-app (its game only runs through it).
+    if (activeNetwork === 'vanilla') {
+      installVanillaLauncher();
+      return;
+    }
     addLog(`Opening ${info.downloadPage} — no ${info.label} client to install yet.`, 'info', 'install');
     window.radium?.openUrl(info.downloadPage);
     return;
@@ -3908,8 +4162,12 @@ let stellaPatchCheckedAt = 0;
 let stellaPatchCheckSeq = 0;
 
 function stellaUpdateNeeded() {
-  return networkInfo().hasPatch && stellaPatchNetwork === activeNetwork && isInstalled
-    && (stellaPatchUpdating || stellaPatch?.updateAvailable === true);
+  // Always a real boolean: on a network without `hasPatch` (Vanilla, Radium)
+  // this used to be `undefined`, and classList.toggle(name, undefined) FLIPS
+  // the class instead of removing it — so every install check turned the
+  // UPDATE bar on or off at random there.
+  return !!(networkInfo().hasPatch && stellaPatchNetwork === activeNetwork && isInstalled
+    && (stellaPatchUpdating || stellaPatch?.updateAvailable === true));
 }
 
 /// The backend calls for the active network's patch.
@@ -3930,7 +4188,7 @@ function setStellaUpdateProgress(title, pct) {
 function applyStellaPatchUI() {
   const needed = stellaUpdateNeeded();
   document.body.classList.toggle('stella-update-needed', needed);
-  document.body.classList.toggle('stella-updating', needed && stellaPatchUpdating);
+  document.body.classList.toggle('stella-updating', !!(needed && stellaPatchUpdating));
   const btn = $('btnStellaUpdate');
   if (btn) btn.disabled = stellaPatchUpdating;
   if (!stellaPatchUpdating) {
@@ -4403,6 +4661,7 @@ $('uninstallConfirmBtn')?.addEventListener('click', async () => {
 
 // Open client folder button
 $('btnOpenFolder')?.addEventListener('click', async () => {
+  if (activeNetwork === 'vanilla') { openVanillaGameFolder(); return; }
   addLog('Opening client folder...', 'info', 'install');
   const ok = await window.radium?.openClientFolder();
   if (ok) {
@@ -4452,9 +4711,19 @@ async function afterInstallDirChange(network) {
   await checkInstall();
 }
 
+/// Vanilla's game folder belongs to Vanilla's launcher (it's chosen there).
+async function openVanillaGameFolder() {
+  try {
+    await window.radium.openVanillaInstallFolder();
+  } catch (e) {
+    toast(String(e), 'info', 4000);
+  }
+}
+
 document.querySelectorAll('[data-open-folder]').forEach(btn => {
   btn.addEventListener('click', async () => {
     const network = installRowNetwork(btn, 'data-open-folder');
+    if (network === 'vanilla') { openVanillaGameFolder(); return; }
     const label = networkInfo(network).label;
     addLog(`Opening ${label} client folder from settings...`, 'info', 'install');
     const ok = await window.radium?.openClientFolder(network);
@@ -4962,8 +5231,10 @@ $('steamModal')?.addEventListener('click', (e) => {
 // (steam://install/92) is installed. If it already is, this is invisible.
 async function executeLaunch() {
   // Codename Gordon is what the older clients lean on for Steam; Stella's
-  // 2024 client and Rec EOS's 2022 one don't need it.
-  if (config.disableWarnings !== true && activeNetwork !== 'stella' && activeNetwork !== 'receos') {
+  // 2024 client and Rec EOS's 2022 one don't need it. Vanilla now launches
+  // through its own launcher, which handles its own requirements, so the
+  // Steam-app gate doesn't apply there either.
+  if (config.disableWarnings !== true && activeNetwork !== 'stella' && activeNetwork !== 'receos' && activeNetwork !== 'vanilla') {
     let installed = true;
     try {
       installed = await window.radium?.checkRequiredSteamApp();
@@ -5006,7 +5277,103 @@ $('steamAppAnywayBtn')?.addEventListener('click', () => {
 /// the room's PLAY). See joinStellaFriend() and playStellaRoom().
 let pendingJoin = null;
 
+// EXPERIMENTAL: open Vanilla's launcher and press its Play button for the user,
+// via UI Automation in the backend. The launcher (signed in) does the real
+// launch and makes the anti-cheat session — we only automate the click. If the
+// launcher isn't ready (not signed in, game not installed in it, updating), it's
+// brought to the front and the user is told what to do there.
+/// Whether the last Vanilla game download had Vanilla's launcher sign it off
+/// (set by runClientDownload; null until one finishes).
+let lastVanillaSignOff = null;
+
+async function autoplayVanilla({ afterSignOff = false } = {}) {
+  // Keep the launch guard held for the whole operation (up to ~45s while the
+  // launcher loads, ~5 min while waiting on sign-in), so Play can't re-fire.
+  isGameLaunching = true;
+  addLog("Opening Vanilla's launcher and pressing Play...", 'info', 'game');
+  toast('Starting Vanilla...', 'info', 2500);
+
+  // Screens the backend spots while it waits. Sign-in is the only one it keeps
+  // waiting through: once the user signs in, it presses Play for them.
+  let sawSignin = false;
+  let unlisten = null;
+  try {
+    unlisten = await window.__TAURI__?.event?.listen('vanilla-autoplay', (e) => {
+      if (e.payload === 'signin' && !sawSignin) {
+        sawSignin = true;
+        addLog("Vanilla's launcher needs you to sign in. Rec EOS will press Play once you're in.", 'warn', 'game');
+        toast("Sign in to Vanilla's launcher — Rec EOS will press Play once you're in.", 'info', 10000);
+      }
+    });
+  } catch { /* no live updates — the final result below still covers it */ }
+
+  let result = null;
+  try {
+    result = await window.radium?.autoplayVanilla(playMode === 'vr' ? 'vr' : 'screen');
+  } catch (e) {
+    console.error('autoplayVanilla error:', e);
+    result = { success: false, error: e.toString() };
+  }
+  try { unlisten?.(); } catch { /* ignore */ }
+  isGameLaunching = false;
+
+  const status = result?.autoplay;
+  const modeName = playMode === 'vr' ? 'VR' : 'Screen';
+  if (status === 'invoked') {
+    // modeSet: we picked the mode in Vanilla's launcher (or its Play button
+    // named it). If not, the launcher used whatever mode it had selected.
+    if (result?.modeSet) {
+      addLog(`Pressed Play in Vanilla's launcher (${modeName} mode) — the game is starting.`, 'ok', 'game');
+      toast(`Launching Vanilla in ${modeName} mode...`, 'ok', 3000);
+    } else {
+      addLog(`Pressed Play in Vanilla's launcher, but couldn't find its Screen/VR switch to pick ${modeName} — it uses the mode selected there.`, 'warn', 'game');
+      toast("Launching Vanilla — using the mode picked in Vanilla's launcher.", 'info', 5000);
+    }
+  } else if (status === 'needs_mode') {
+    addLog(`Vanilla's launcher only offered Play for the other mode. Pick ${modeName} there and press Play.`, 'warn', 'game');
+    toast(`Pick ${modeName} in Vanilla's launcher, then press Play there.`, 'info', 7000);
+  } else if (status === 'needs_client' || status === 'needs_update') {
+    // Vanilla's launcher hasn't got (this version of) the game on record. Rec
+    // EOS downloads the game itself, so it does the hand-off: re-check the
+    // files, fetch anything missing, have the launcher sign them off — then
+    // press Play once more.
+    if (afterSignOff) {
+      addLog("Vanilla's launcher still isn't ready after checking the files. Open it and finish there, then press Play here.", 'warn', 'game');
+      toast("Vanilla's launcher still isn't ready — finish there, then press Play.", 'info', 7000);
+      return;
+    }
+    addLog("Vanilla's launcher hasn't got the game on record yet — checking the files and handing them over to it...", 'info', 'game');
+    toast("Getting Vanilla ready...", 'info', 3000);
+    lastVanillaSignOff = null;
+    await runClientDownload();
+    if (isInstalled && lastVanillaSignOff === true) await autoplayVanilla({ afterSignOff: true });
+  } else if (status === 'needs_busy') {
+    addLog("Vanilla's launcher is still downloading or updating the game. Press Play here when it's done.", 'warn', 'game');
+    toast("Vanilla's launcher is still downloading the game — press Play when it's done.", 'info', 7000);
+  } else if (status === 'no_play') {
+    const msg = sawSignin
+      ? "Didn't see a sign-in to Vanilla's launcher. Sign in there, then press Play here."
+      : "Vanilla's launcher wasn't ready to play. Finish there, then press Play here.";
+    addLog(msg, 'warn', 'game');
+    toast(msg, 'info', 7000);
+  } else if (status === 'no_launcher') {
+    addLog("Vanilla's launcher isn't installed. Press GET VANILLA first.", 'error', 'game');
+    toast("Install Vanilla's launcher first (GET VANILLA).", 'error', 5000);
+  } else {
+    const err = result?.error || 'Unknown error';
+    addLog(`Couldn't start Vanilla: ${err}`, 'error', 'game');
+    toast(`Couldn't start Vanilla: ${err}`, 'error', 5000);
+  }
+}
+
 async function doLaunch() {
+  // Vanilla's game runs only through Vanilla's launcher (anti-cheat), so Play
+  // opens that launcher and auto-presses its Play button via the backend. We
+  // don't start RecRoom.exe ourselves, so this doesn't go through launchGame.
+  if (activeNetwork === 'vanilla') {
+    await autoplayVanilla();
+    return;
+  }
   setGameRunning(true);
   const join = stellaLike() ? pendingJoin : null;
   pendingJoin = null;
@@ -5037,6 +5404,14 @@ async function doLaunch() {
     const err = result?.error || 'Unknown error';
     addLog(`Launch failed: ${err}`, 'error', 'game');
     toast(`Launch failed: ${err}`, 'error', 5000);
+  } else if (result.handoff === 'vanilla-launcher') {
+    // The game isn't running yet — Vanilla's launcher is now open and the
+    // user starts the game from there (it makes the anti-cheat session). So
+    // don't show a running state: there's no process for us to monitor, and
+    // doing so would fire a spurious "Game closed" on the next poll.
+    setGameRunning(false);
+    addLog("Opened Vanilla's launcher — sign in there and press Play to start the game.", 'ok', 'game');
+    toast("Opened Vanilla's launcher — press Play there to start.", 'ok', 5000);
   } else {
     // .bat launches report no PID (the cmd.exe wrapper's PID is meaningless).
     const pidPart = (result.pid !== null && result.pid !== undefined) ? ` (PID ${result.pid})` : '';
@@ -5099,6 +5474,12 @@ async function proceedAfterAvCheck() {
 // game's patched files aren't quarantined. Flows into the Smart App Control
 // check, then the Steam check, then the actual launch.
 async function checkAvAndLaunch() {
+  // Vanilla's game lives in Vanilla's launcher's folder, which this exclusion
+  // (Rec EOS's own client folders) doesn't cover — nothing to offer there.
+  if (activeNetwork === 'vanilla') {
+    await proceedAfterAvCheck();
+    return;
+  }
   if (config.disableWarnings === true) {
     addLog('AV exclusion check skipped (disabled by user).', 'info', 'game');
     await proceedAfterAvCheck();
@@ -9786,7 +10167,13 @@ async function init() {
   addLog(`Network: ${networkInfo().label} (${networkInfo().site})`, 'info');
   // Radium's own setting; the server check logs every network's address.
   if (activeNetwork === 'radium') addLog(`API: ${config.apiUrl}`, 'info');
-  addLog(`Install dir: ${shownInstallDir()}`, 'info');
+  if (activeNetwork === 'vanilla') {
+    let dir = '';
+    try { dir = (await window.radium?.vanillaLauncherSettings())?.gameDirectory || ''; } catch (e) {}
+    addLog(`Vanilla game folder (set in Vanilla's launcher): ${dir || defaultInstallDirHint('vanilla')}`, 'info');
+  } else {
+    addLog(`Install dir: ${shownInstallDir()}`, 'info');
+  }
 
   // Check install first (determines which panel to show)
   await checkInstall();

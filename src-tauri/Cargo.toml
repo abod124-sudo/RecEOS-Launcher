@@ -65,6 +65,8 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_WindowsAndMessaging",
     # The per-user "Run" value that starts the launcher with Windows.
     "Win32_System_Registry",
+    # Free disk space before downloading Vanilla's game.
+    "Win32_Storage_FileSystem",
     # The tray icon's size at the current display scaling, and loading the
     # window icon at the sizes Windows actually draws.
     "Win32_UI_HiDpi",
