@@ -8364,6 +8364,9 @@ const CHAT_POLL_MS = 20 * 1000;
 const CHAT_POLL_IDLE_MS = 60 * 1000;
 const CHAT_POLL_GAME_MS = 2 * 60 * 1000;
 let receosLastPoll = 0;
+/// When the Rec EOS bell (and the chat list it brings) was last read in full.
+let receosBellAt = 0;
+const RECEOS_BELL_REFRESH_MS = 3 * 60 * 1000;
 
 /// Unread chats as rows in the Rec EOS bell: one per chat, its newest
 /// message. The id carries that message, so a new one counts as unread again.
@@ -8725,6 +8728,8 @@ window.addEventListener('focus', () => {
   }
   // Right away, unless it just checked (focus comes and goes a lot).
   if (Date.now() - receosLastPoll > 10 * 1000) pollReceos();
+  // Back from the game: chats read or invites answered there show as such.
+  if (Date.now() - receosBellAt > 60 * 1000) loadNotifications(notifSources.receos);
 });
 
 // Whoever is signed in, from the last run.
@@ -8856,6 +8861,7 @@ async function loadNotifications(src) {
   const player = src.player();
   if (!player || src.loading) return;
   src.loading = true;
+  if (src.net === 'receos') receosBellAt = Date.now();
   const panelOpen = () => !$('vanillaNotifsPanel')?.hidden && panelSource === src;
   try {
     const list = await src.fetch();
@@ -9166,8 +9172,9 @@ window.addEventListener('resize', () => {
 setInterval(() => {
   if (document.hidden && !notifPrefs().popups) return;
   for (const src of Object.values(notifSources)) {
-    // Rec EOS's bell is reloaded by pollReceos when something new comes in.
-    if (src.net === 'receos') continue;
+    // Rec EOS's bell is reloaded by pollReceos when something new comes in, and here only now and then while
+    // someone is looking, for what changes without anything new arriving (a chat read or an invite deleted in game).
+    if (src.net === 'receos' && (document.hidden || !document.hasFocus() || Date.now() - receosBellAt < RECEOS_BELL_REFRESH_MS)) continue;
     if (src.player()) loadNotifications(src);
   }
 }, 60 * 1000);
