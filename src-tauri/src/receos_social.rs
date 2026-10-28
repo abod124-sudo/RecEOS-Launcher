@@ -396,7 +396,14 @@ async fn my_id(app: &AppHandle) -> Option<i64> {
 /// The player's chats, newest first: `[{ id, name, members, latest, unread }]`.
 #[tauri::command]
 pub async fn receos_chat_threads(app: AppHandle) -> Result<Value, String> {
-    let threads = call(&app, reqwest::Method::GET, "/launcher/chat/threads?max=50", None).await?;
+    let threads = call(&app, reqwest::Method::GET, "/launcher/chat/threads?max=50&withPlayers=1", None).await?;
+    // Servers with withPlayers answer { me, threads, players } in one request; older ones a bare list, and then
+    // the names and our own id are two more requests.
+    if let Some(list) = threads["threads"].as_array() {
+        let me = threads["me"].as_i64();
+        let people = &threads["players"];
+        return Ok(Value::Array(list.iter().map(|t| thread_json(t, me, people)).collect()));
+    }
     let list = threads.as_array().cloned().unwrap_or_default();
     let mut ids: Vec<i64> = list
         .iter()

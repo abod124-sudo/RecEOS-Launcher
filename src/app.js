@@ -8357,6 +8357,13 @@ let chatLoading = false;
 /// `{ message, chat }` cursors for receos_updates; null until the first look.
 let receosCursors = null;
 const CHAT_POLL_MS = 20 * 1000;
+/// Slower checks when nobody is looking: the window hidden or in the
+/// background (60 s), or the game running, where pop-ups are held back anyway
+/// and the game shows chats itself (2 min). Every check is a server request
+/// for every launcher, so this is most of Rec EOS's API traffic.
+const CHAT_POLL_IDLE_MS = 60 * 1000;
+const CHAT_POLL_GAME_MS = 2 * 60 * 1000;
+let receosLastPoll = 0;
 
 /// Unread chats as rows in the Rec EOS bell: one per chat, its newest
 /// message. The id carries that message, so a new one counts as unread again.
@@ -8634,6 +8641,7 @@ let receosPolling = false;
 async function pollReceos() {
   if (!receosPlayer || receosPolling) return;
   receosPolling = true;
+  receosLastPoll = Date.now();
   try {
     await pollReceosOnce();
   } finally {
@@ -8644,14 +8652,20 @@ async function pollReceos() {
 async function pollReceosOnce() {
   let res;
   try {
-    res = await window.radium.receosUpdates(null, receosCursors ? receosCursors.chat : null);
+    // Both cursors: new game invites and friend notices come back in the same
+    // answer as new chat, so the bell needs no polling of its own.
+    res = await window.radium.receosUpdates(receosCursors ? receosCursors.message : null, receosCursors ? receosCursors.chat : null);
   } catch (e) {
     receosSignedOutBy(e);
     return;
   }
   const first = !receosCursors;
-  receosCursors = { chat: res.chatCursor };
-  if (first || !res.chat?.length) return;
+  receosCursors = { message: res.messageCursor, chat: res.chatCursor };
+  if (first) return;
+  // New chat or a new notice: the bell's list (its fetch also reloads the chat
+  // list) is read again, only now.
+  if (res.messages?.length || res.chat?.length) await loadNotifications(notifSources.receos);
+  if (!res.chat?.length) return;
   // New messages go into the open chat whether or not the window has focus
   // (the game is usually in front); they only count as read once it does.
   const chatTabOpen = document.querySelector('#tab-chats.active') && activeNetwork === 'receos';
@@ -8663,9 +8677,8 @@ async function pollReceosOnce() {
     renderChatMessages({ keepScroll: true });
     if (looking) markChatRead(chatOpenId);
   }
-  // The chat list, with its unread marks.
+  // The chat list, with its unread marks (reloaded by loadNotifications above).
   if (activeNetwork === 'receos') {
-    try { chatThreads = await window.radium.receosChatThreads(); } catch (e) {}
     if (chatOpenId && looking) {
       const t = chatThreads.find(x => x.id === chatOpenId);
       if (t) t.unread = false;
@@ -8697,7 +8710,9 @@ async function pollReceosOnce() {
 setInterval(() => {
   if (!receosPlayer) return;
   if (document.hidden && !notifPrefs().popups) return;
-  pollReceos();
+  const every = isGameRunning ? CHAT_POLL_GAME_MS
+    : document.hidden || !document.hasFocus() ? CHAT_POLL_IDLE_MS : CHAT_POLL_MS;
+  if (Date.now() - receosLastPoll >= every - 1000) pollReceos();
 }, CHAT_POLL_MS);
 
 // Back from the game: what came in while away counts as read now, and a
@@ -8708,7 +8723,8 @@ window.addEventListener('focus', () => {
     const t = chatThreads.find(x => x.id === chatOpenId);
     if (t?.unread) markChatRead(chatOpenId);
   }
-  pollReceos();
+  // Right away, unless it just checked (focus comes and goes a lot).
+  if (Date.now() - receosLastPoll > 10 * 1000) pollReceos();
 });
 
 // Whoever is signed in, from the last run.
@@ -9143,13 +9159,15 @@ window.addEventListener('resize', () => {
   if (!$('vanillaNotifsPanel')?.hidden) positionNotifPanel();
 });
 
-// Check for new ones every minute while signed in, so pop-ups arrive close to
+// Check for new ones every minute while signed in (not Rec EOS: see pollReceos), so pop-ups arrive close to
 // when the notification did. One small request each. While the launcher is
 // minimised it only keeps checking if pop-ups are on. Stella's also come
 // over its live hub the moment they are sent (onStellaMessage).
 setInterval(() => {
   if (document.hidden && !notifPrefs().popups) return;
   for (const src of Object.values(notifSources)) {
+    // Rec EOS's bell is reloaded by pollReceos when something new comes in.
+    if (src.net === 'receos') continue;
     if (src.player()) loadNotifications(src);
   }
 }, 60 * 1000);
