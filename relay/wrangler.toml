@@ -1,0 +1,13 @@
+name = "receos-bug-relay"
+main = "worker.js"
+compatibility_date = "2026-09-01"
+
+# A couple of reports per IP address per minute. Cloudflare only allows a
+# period of 10 or 60 seconds here.
+[[ratelimits]]
+name = "REPORT_LIMIT"
+namespace_id = "1001"
+simple = { limit = 2, period = 60 }
+
+# The Discord webhook address is a secret, never written in this file:
+#   npx wrangler secret put DISCORD_WEBHOOK

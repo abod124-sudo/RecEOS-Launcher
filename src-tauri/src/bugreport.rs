@@ -16,6 +16,9 @@ use crate::{applog, config, download};
 const MIN_DESCRIPTION: usize = 10;
 const MAX_DESCRIPTION: usize = 1500;
 
+/// Where reports are sent: the relay Worker in relay/, never Discord itself.
+const REPORT_URL: &str = "https://receos-bug-relay.receos-api.workers.dev/report";
+
 /// Seconds between two reports.
 const COOLDOWN_SECS: u64 = 60;
 
@@ -578,8 +581,8 @@ async fn send(app: tauri::AppHandle, report: Report) -> Result<Sent, String> {
     }));
 
     let payload = serde_json::json!({
-        "content": format!("New bug report {reference} [{severity_name}] @everyone"),
-        "allowed_mentions": { "parse": ["everyone"] },
+        // The relay adds the @everyone ping itself.
+        "content": format!("New bug report {reference} [{severity_name}]"),
         "embeds": [{
             "title": format!("{category} · {reference}"),
             "description": description,
@@ -594,8 +597,11 @@ async fn send(app: tauri::AppHandle, report: Report) -> Result<Sent, String> {
         .build()
         .map_err(|e| format!("Couldn't start the upload: {e}"))?;
 
+    // Reports go through our relay (the relay/ folder), which holds the
+    // Discord webhook as a secret. Never put a webhook address in the app:
+    // anyone can read it out of the .exe.
     #[allow(unused_mut)]
-    let mut url = "https://discord.com/api/webhooks/1513559636333170749/pf4DGcoowdQsFZignVKwcErrTb-HnOXPnOOGORRi1w_xAljckbmx9g0BZhSjzzhVmefj";
+    let mut url = REPORT_URL;
 
     // Development builds can send somewhere harmless instead, to test the
     // dialog end to end without posting to the real channel.
