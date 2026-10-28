@@ -7,7 +7,9 @@
 //! Rec EOS downloads them into the folder Vanilla's launcher installs to
 //! (`<installDirectory>\Vanilla`), checking every file against the manifest.
 //!
-//! Rec EOS never writes the launcher's own records. Once every file is in
+//! Rec EOS never writes the launcher's own records (the one exception is
+//! Uninstall, which removes the game's entry exactly as the launcher's own
+//! Uninstall does; see [`uninstall`]). Once every file is in
 //! place, it presses the launcher's Download / Update / Resume: the launcher
 //! re-checks the files, finds them all present (it reuses files already on
 //! disk — tested), downloads nothing, and writes `.launchermanifest.json` and
@@ -762,6 +764,231 @@ pub(crate) async fn download(app: AppHandle) -> Result<Value, String> {
     }))
 }
 
+/// Verify Files for Vanilla: hash every game file against Vanilla's file list
+/// (none skipped, unlike a download's check), reporting `verify` progress.
+/// Answers like `verify::verify_client`: `{status: ok | damaged, checked,
+/// damaged: [{path, problem}], damagedBytes}`. Files that pass are remembered
+/// as checked and the ones that fail are forgotten, so the repair (a normal
+/// [`download`]) fetches exactly those.
+pub(crate) async fn verify(app: AppHandle) -> Result<Value, String> {
+    let _guard = crate::download::claim_client_task()?;
+    crate::download::reset_cancel();
+    if crate::game::game_running(&app) {
+        return Err("Close the game before checking its files.".into());
+    }
+    let root = game_dir().filter(|d| d.is_dir()).ok_or("There's no installed game to check.")?;
+    emit(&app, json!({ "phase": "verify", "pct": -1, "done": 0, "totalEntries": 0, "entry": "Getting Vanilla's file list...", "eta": -1 }));
+    let manifest = fetch_manifest(&http_client()?).await?;
+
+    let verified = Arc::new(std::sync::Mutex::new(load_verified(&app)));
+    let (check_app, check_root, files, check_verified) = (app.clone(), root.clone(), manifest.files.clone(), verified.clone());
+    let damaged = tokio::task::spawn_blocking(move || check_every_file(&check_app, &check_root, &files, &check_verified))
+        .await
+        .map_err(|e| format!("File check failed: {}", e))?;
+    save_verified(&app, &verified.lock().unwrap());
+    let damaged = damaged?;
+
+    let damaged_bytes: u64 = damaged.iter().map(|(i, _)| manifest.files[*i].size).sum();
+    let list: Vec<Value> = damaged.iter().map(|(i, p)| json!({ "path": manifest.files[*i].path, "problem": p })).collect();
+    Ok(json!({
+        "status": if list.is_empty() { "ok" } else { "damaged" },
+        "checked": manifest.files.len(),
+        "damaged": list,
+        "damagedBytes": damaged_bytes,
+    }))
+}
+
+/// Hash every file on a few threads. Returns the failing ones (index into
+/// `files`, with `missing` / `size` / `content`), sorted.
+fn check_every_file(
+    app: &AppHandle,
+    root: &Path,
+    files: &[ManifestFile],
+    verified: &std::sync::Mutex<Verified>,
+) -> Result<Vec<(usize, &'static str)>, String> {
+    let total: u64 = files.iter().map(|f| f.size).sum::<u64>().max(1);
+    let hashed = AtomicU64::new(0);
+    let next = AtomicU64::new(0);
+    let done = AtomicU64::new(0);
+    let last_name = std::sync::Mutex::new(String::new());
+    let bad = std::sync::Mutex::new(Vec::new());
+    let started = Instant::now();
+    std::thread::scope(|s| {
+        for _ in 0..4 {
+            s.spawn(|| loop {
+                if crate::download::cancel_requested() {
+                    return;
+                }
+                let i = next.fetch_add(1, Ordering::SeqCst) as usize;
+                let Some(f) = files.get(i) else { return };
+                *last_name.lock().unwrap() = f.path.rsplit('/').next().unwrap_or(&f.path).to_string();
+                let problem = match safe_relative_path(&f.path).map(|rel| root.join(rel)) {
+                    None => Some("missing"),
+                    Some(dest) => match dest.metadata() {
+                        Ok(m) if m.is_file() && m.len() == f.size => {
+                            if sha256_file(&dest).as_deref() == Some(f.sha256.as_str()) {
+                                remember(verified, &dest, f);
+                                None
+                            } else {
+                                Some("content")
+                            }
+                        }
+                        Ok(m) if m.is_file() => Some("size"),
+                        _ => Some("missing"),
+                    },
+                };
+                // BepInEx rewrites its cache every time the game starts, so a
+                // changed cache file isn't damage (a missing one still is).
+                let problem = problem.filter(|p| !(*p != "missing" && f.path.starts_with("BepInEx/cache/")));
+                if let Some(p) = problem {
+                    verified.lock().unwrap().remove(&f.path);
+                    bad.lock().unwrap().push((i, p));
+                }
+                hashed.fetch_add(f.size, Ordering::SeqCst);
+                done.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        while (done.load(Ordering::SeqCst) as usize) < files.len() && !crate::download::cancel_requested() {
+            std::thread::sleep(Duration::from_millis(400));
+            let h = hashed.load(Ordering::SeqCst);
+            let pct = (h as f64 / total as f64 * 100.0).min(99.0) as i64;
+            let secs = started.elapsed().as_secs_f64();
+            let eta = if h > 0 { (secs / h as f64 * total.saturating_sub(h) as f64) as i64 } else { -1 };
+            emit(app, json!({ "phase": "verify", "pct": pct, "done": done.load(Ordering::SeqCst),
+                "totalEntries": files.len(), "entry": last_name.lock().unwrap().clone(), "eta": eta }));
+        }
+    });
+    if crate::download::cancel_requested() {
+        return Err(crate::download::CANCELLED.into());
+    }
+    let mut v = bad.into_inner().unwrap();
+    v.sort_unstable();
+    Ok(v)
+}
+
+/// Uninstall Vanilla's game the way Vanilla's own launcher does (its Uninstall
+/// button deletes the game folder and drops the game from `installedVersions`):
+/// close the launcher first, so it can't write back the record it holds in
+/// memory, then remove the entry and delete `<installDirectory>\Vanilla`.
+/// The entry goes first: if the delete then fails part way, the game reads as
+/// not installed (a download fills in what's missing) rather than installed
+/// with files gone. Refuses a folder that doesn't look like Vanilla's game.
+pub(crate) async fn uninstall(app: &AppHandle) -> Result<(), String> {
+    if crate::game::game_running(app) {
+        return Err("Cannot uninstall while the game is running.".into());
+    }
+    let _guard = crate::download::claim_client_task()
+        .map_err(|_| "Cannot uninstall while a download or file check is in progress.".to_string())?;
+    tokio::task::spawn_blocking(crate::vanilla_launcher::close_vanilla_launcher)
+        .await
+        .map_err(|e| e.to_string())?;
+    // Killed processes let go of their files only once they've exited.
+    for _ in 0..40 {
+        if !crate::game::any_vanilla_launcher_process() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    let root = game_dir().filter(|d| d.exists());
+    if let Some(root) = &root {
+        let looks_like_game = root.file_name().is_some_and(|n| n.eq_ignore_ascii_case("Vanilla"))
+            && (root.join("RecRoom.exe").exists() || root.join(LAUNCHER_MANIFEST).exists() || root.join("RecRoom_Data").exists());
+        if !looks_like_game {
+            return Err(format!("Nothing was removed: '{}' doesn't look like Vanilla's game folder.", root.display()));
+        }
+    }
+
+    forget_launcher_entry()?;
+    if let Some(p) = verified_path(app) {
+        let _ = std::fs::remove_file(p);
+    }
+
+    if let Some(root) = root {
+        // A file still briefly held (antivirus scanning it, a process just
+        // exiting) gets a few more tries.
+        let dir = root.clone();
+        tokio::task::spawn_blocking(move || remove_tree(&dir))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| format!("Couldn't delete everything in {}: {}. Close anything using it and press Uninstall again.", root.display(), e))?;
+    }
+    Ok(())
+}
+
+/// Delete `dir` and everything in it. `std::fs::remove_dir_all` stops at the
+/// first file it can't delete (seen here: a sharing violation on a file that
+/// nothing held a moment later), leaving almost everything; this deletes what
+/// it can, retries the rest a few times, and names a file that still won't go.
+/// Doesn't follow links out of the folder (a link is deleted, not entered).
+fn remove_tree(dir: &Path) -> Result<(), String> {
+    fn pass(dir: &Path, failed: &mut Vec<(PathBuf, std::io::Error)>) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            let Ok(ft) = e.file_type() else { continue };
+            if ft.is_dir() && !ft.is_symlink() {
+                pass(&p, failed);
+                if let Err(err) = std::fs::remove_dir(&p) {
+                    if p.exists() && failed.is_empty() {
+                        failed.push((p, err));
+                    }
+                }
+            } else {
+                // A read-only file can't be deleted until that's cleared.
+                if let Ok(m) = std::fs::symlink_metadata(&p) {
+                    let mut perm = m.permissions();
+                    if perm.readonly() {
+                        #[allow(clippy::permissions_set_readonly_false)]
+                        perm.set_readonly(false);
+                        let _ = std::fs::set_permissions(&p, perm);
+                    }
+                }
+                let removed = if ft.is_symlink() && ft.is_dir() { std::fs::remove_dir(&p) } else { std::fs::remove_file(&p) };
+                if let Err(err) = removed {
+                    failed.push((p, err));
+                }
+            }
+        }
+    }
+    let mut last: Option<(PathBuf, std::io::Error)> = None;
+    for attempt in 0..8 {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_millis(1000));
+        }
+        let mut failed = Vec::new();
+        pass(dir, &mut failed);
+        let _ = std::fs::remove_dir(dir);
+        if !dir.exists() {
+            return Ok(());
+        }
+        last = failed.into_iter().next();
+    }
+    Err(match last {
+        Some((p, e)) => format!("{} ({})", e, p.strip_prefix(dir).unwrap_or(&p).display()),
+        None => "the folder is still there".into(),
+    })
+}
+
+/// Remove Vanilla's entry from the launcher's `installedVersions` (and only
+/// that), as the launcher's own Uninstall does.
+fn forget_launcher_entry() -> Result<(), String> {
+    if let Some(path) = std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("VanillaLauncher").join("settings.json")) {
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            if let Ok(mut v) = serde_json::from_str::<Value>(&text) {
+                let removed = v.get_mut("installedVersions").and_then(Value::as_object_mut).is_some_and(|m| m.remove(APP_ID).is_some());
+                if removed {
+                    let tmp = path.with_extension("json.receos-tmp");
+                    let pretty = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
+                    std::fs::write(&tmp, pretty).and_then(|_| std::fs::rename(&tmp, &path))
+                        .map_err(|e| format!("Couldn't update Vanilla's launcher, so nothing was removed: {}", e))?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Have Vanilla's launcher check the files and record the install: open it,
 /// press its Download / Update / Resume, and wait until it offers Launch.
 /// Never presses Cancel (the launcher's Cancel deletes the install folder).
@@ -810,6 +1037,7 @@ fn run_sign_off(app: &AppHandle, launcher: &str, version: &str) -> Result<String
         .creation_flags(0x08000000) // CREATE_NO_WINDOW
         .spawn()
         .map_err(|e| format!("Couldn't reach Vanilla's launcher: {}", e))?;
+    let behind = crate::game::VanillaLauncherBehind::start(app, true);
     let mut result = "timeout".to_string();
     if let Some(out) = child.stdout.take() {
         for line in BufReader::new(out).lines().map_while(Result::ok) {
@@ -817,6 +1045,8 @@ fn run_sign_off(app: &AppHandle, launcher: &str, version: &str) -> Result<String
             if let Some(p) = line.strip_prefix("pct:") {
                 let pct: i64 = p.parse().unwrap_or(-1);
                 emit(app, json!({ "phase": "extract", "pct": pct, "status": "Vanilla's launcher is checking the files..." }));
+            } else if line == "launcher:shown" {
+                behind.mark_shown();
             } else if line == "state:restart" {
                 emit(app, json!({ "phase": "extract", "pct": -1, "status": "Restarting Vanilla's launcher..." }));
             } else if line == "state:signin" {
@@ -916,7 +1146,22 @@ Say $result
 
 #[cfg(test)]
 mod tests {
-    use super::{file_url, parse_manifest, safe_relative_path};
+    use super::{file_url, parse_manifest, remove_tree, safe_relative_path};
+
+    #[test]
+    fn remove_tree_deletes_nested_and_read_only_files() {
+        let root = std::env::temp_dir().join(format!("receos-rt-{}", std::process::id()));
+        let deep = root.join("RecRoom_Data").join("Managed");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(root.join("RecRoom.exe"), b"x").unwrap();
+        let ro = deep.join("ro.dll");
+        std::fs::write(&ro, b"y").unwrap();
+        let mut perm = std::fs::metadata(&ro).unwrap().permissions();
+        perm.set_readonly(true);
+        std::fs::set_permissions(&ro, perm).unwrap();
+        remove_tree(&root).expect("removes everything");
+        assert!(!root.exists());
+    }
 
     #[test]
     fn manifest_paths_must_stay_inside_the_game_folder() {

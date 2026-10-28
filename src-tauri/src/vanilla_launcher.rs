@@ -25,7 +25,10 @@ use std::path::PathBuf;
 ///   Windows reports while minimised, so a tiny window is resized to 900x532.
 /// * `Test-LauncherUp` — the launcher itself, not the `--anticheat-guard`
 ///   processes, which share its exe name and outlive their games.
-/// * `Get-LauncherElements`, `Clickable-Ancestor`, `Show-Launcher`, `Say`.
+/// * `Show-Launcher` — the launcher works behind Rec EOS (kept there by
+///   `game::VanillaLauncherBehind`) and comes forward only when it needs the
+///   user (sign-in, a choice, an error).
+/// * `Get-LauncherElements`, `Clickable-Ancestor`, `Say`.
 ///
 /// `__LAUNCHER_PATH__` (used by `Start-Launcher`) is filled in by the caller.
 #[cfg(target_os = "windows")]
@@ -86,7 +89,10 @@ function Restore-LauncherWindow($h) {
     Start-Sleep -Milliseconds 800
   }
 }
+# `launcher:shown` tells Rec EOS's watcher (game::VanillaLauncherBehind) to stop
+# sending the launcher to the back.
 function Show-Launcher($h) {
+  if (-not $script:launcherShown) { $script:launcherShown = $true; Say 'launcher:shown' }
   if ($h -and $h -ne [IntPtr]::Zero) { [VlaWin]::ShowWindow($h, 9) | Out-Null; [VlaWin]::SetForegroundWindow($h) | Out-Null }
 }
 function Get-LauncherElements($h) {
@@ -388,7 +394,7 @@ pub async fn vanilla_launcher_update_status() -> Value {
 /// behind after games end, so its installer can replace the files. Only
 /// called with no game running, when every guard is a leftover.
 #[cfg(target_os = "windows")]
-fn close_vanilla_launcher() {
+pub(crate) fn close_vanilla_launcher() {
     use std::os::windows::process::CommandExt;
     let script = "Get-CimInstance Win32_Process -Filter \"Name='vanillalauncher.exe'\" | \
                   ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }";
@@ -398,7 +404,7 @@ fn close_vanilla_launcher() {
         .output();
 }
 #[cfg(not(target_os = "windows"))]
-fn close_vanilla_launcher() {}
+pub(crate) fn close_vanilla_launcher() {}
 
 /// Update Vanilla's launcher: close it (never while a game runs), then fetch,
 /// verify and open the latest official installer — the same path as the

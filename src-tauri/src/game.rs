@@ -499,6 +499,7 @@ pub async fn autoplay_vanilla(app: tauri::AppHandle, mode: Option<String>) -> Re
 
     #[cfg(target_os = "windows")]
     {
+        let resolution_fixed = fix_tiny_game_resolution();
         let events = app.clone();
         let (status, mode_set) =
             tokio::task::spawn_blocking(move || run_vanilla_play_automation(&events, &launcher, vr))
@@ -512,11 +513,13 @@ pub async fn autoplay_vanilla(app: tauri::AppHandle, mode: Option<String>) -> Re
             LAUNCH_GRACE_POLLS.store(GRACE_POLLS_AFTER_LAUNCH, Ordering::SeqCst);
             GAME_RUNNING_STATE.store(true, Ordering::SeqCst);
             let _ = app.emit("game-state", json!({ "running": true }));
+            close_vanilla_launcher_once_game_runs(app.clone());
         }
         Ok(json!({
             "success": status != "no_launcher",
             "autoplay": status,
             "modeSet": mode_set,
+            "resolutionFixed": resolution_fixed,
         }))
     }
     #[cfg(not(target_os = "windows"))]
@@ -525,6 +528,284 @@ pub async fn autoplay_vanilla(app: tauri::AppHandle, mode: Option<String>) -> Re
         Err("Auto-play is only supported on Windows.".into())
     }
 }
+
+/// Rec Room keeps its window size in `HKCU\Software\Against Gravity\Rec Room`
+/// (Unity's saved settings; the names carry Unity's fixed hash suffix). Every
+/// client — Vanilla, Stella, Rec EOS, official Rec Room — shares that key, so
+/// one game closing in a tiny window leaves them all starting tiny (seen:
+/// 640x360, "use native" off). Before a launch, a saved size under 1024x576
+/// is reset to the screen's native size. Returns whether it changed anything.
+#[cfg(target_os = "windows")]
+pub(crate) fn fix_tiny_game_resolution() -> bool {
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{
+        RegCloseKey, RegGetValueW, RegOpenKeyExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER,
+        KEY_READ, KEY_WRITE, REG_DWORD, RRF_RT_REG_DWORD,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+
+    const KEY: &str = r"Software\Against Gravity\Rec Room";
+    const WIDTH: &str = "Screenmanager Resolution Width_h182942802";
+    const HEIGHT: &str = "Screenmanager Resolution Height_h2627697771";
+    const NATIVE: &str = "Screenmanager Resolution Use Native_h1405027254";
+    let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+
+    let path = wide(KEY);
+    let mut key: HKEY = std::ptr::null_mut();
+    // SAFETY: valid pointers; `key` is written on success and closed below.
+    if unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, path.as_ptr(), 0, KEY_READ | KEY_WRITE, &mut key) } != ERROR_SUCCESS {
+        return false; // never run yet: nothing saved
+    }
+    let read = |name: &str| -> Option<u32> {
+        let n = wide(name);
+        let (mut v, mut len) = (0u32, 4u32);
+        // SAFETY: `v` holds the 4 bytes a REG_DWORD needs.
+        let rc = unsafe {
+            RegGetValueW(key, std::ptr::null(), n.as_ptr(), RRF_RT_REG_DWORD, std::ptr::null_mut(), (&mut v as *mut u32).cast(), &mut len)
+        };
+        (rc == ERROR_SUCCESS).then_some(v)
+    };
+    let write = |name: &str, v: u32| {
+        let n = wide(name);
+        // SAFETY: a 4-byte REG_DWORD.
+        unsafe { RegSetValueExW(key, n.as_ptr(), 0, REG_DWORD, (&v as *const u32).cast(), 4) };
+    };
+
+    let mut changed = false;
+    if let (Some(w), Some(h)) = (read(WIDTH), read(HEIGHT)) {
+        // SAFETY: no arguments beyond the metric id.
+        let (sw, sh) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
+        if (w < 1024 || h < 576) && sw >= 1024 && sh >= 576 {
+            write(WIDTH, sw as u32);
+            write(HEIGHT, sh as u32);
+            write(NATIVE, 1);
+            changed = true;
+        }
+    }
+    // SAFETY: opened above, closed once.
+    unsafe { RegCloseKey(key) };
+    changed
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn fix_tiny_game_resolution() -> bool {
+    false
+}
+
+/// Whether any `vanillalauncher.exe` process (the launcher or one of its
+/// `--anticheat-guard` helpers) is still running.
+pub(crate) fn any_vanilla_launcher_process() -> bool {
+    any_process_running(&["vanillalauncher.exe"])
+}
+
+/// Whether `hwnd` is Vanilla's launcher window: a Tauri window (Rec EOS's own
+/// is one too) owned by `vanillalauncher.exe`.
+#[cfg(target_os = "windows")]
+fn is_vanilla_launcher_window(hwnd: windows_sys::Win32::Foundation::HWND) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetWindowThreadProcessId};
+    if hwnd.is_null() {
+        return false;
+    }
+    let mut class = [0u16; 64];
+    // SAFETY: the buffer and its length match; a stale handle just fails.
+    let len = unsafe { GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32) };
+    if len <= 0 || String::from_utf16_lossy(&class[..len as usize]) != "Tauri Window" {
+        return false;
+    }
+    let mut pid = 0u32;
+    // SAFETY: `pid` is a valid out pointer.
+    unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+    pid != 0 && find_process(&["vanillalauncher.exe"], |p| p == pid)
+}
+
+/// Every window of Vanilla's launcher (its Tauri windows).
+#[cfg(target_os = "windows")]
+fn vanilla_launcher_windows() -> Vec<windows_sys::Win32::Foundation::HWND> {
+    use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows_sys::Win32::UI::WindowsAndMessaging::EnumWindows;
+    unsafe extern "system" fn each(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        if is_vanilla_launcher_window(hwnd) {
+            // SAFETY: `lparam` is the `&mut Vec` passed below, alive for the call.
+            unsafe { (*(lparam as *mut Vec<HWND>)).push(hwnd) };
+        }
+        1
+    }
+    let mut found: Vec<HWND> = Vec::new();
+    // SAFETY: the callback only pushes into `found` during this call.
+    unsafe { EnumWindows(Some(each), &mut found as *mut Vec<HWND> as LPARAM) };
+    found
+}
+
+/// Keeps Vanilla's launcher out of sight while it works for Rec EOS: just
+/// under Rec EOS's window and centred behind it (Rec EOS is at least as big as
+/// the launcher's usual window), so Rec EOS covers it. Checked every ~0.1s,
+/// since the launcher comes up on top when it starts, when its auto sign-in
+/// finishes and when it starts the game — but a window is only moved when it
+/// is actually above Rec EOS or more than a couple of pixels off, since every
+/// move repaints the windows over it (moving it on every check flickered). With
+/// `refocus`, Rec EOS also takes the focus back when the launcher grabs it (at
+/// most every 1.5s); without it the focus stays with the launcher, which is
+/// what lets the game it starts open in front. When Rec EOS is minimised or in
+/// the tray, the launcher is only sent to the back when it comes to the front.
+/// Stops once the launcher has been brought forward for the user
+/// (`mark_shown`), and when dropped.
+#[cfg(target_os = "windows")]
+pub(crate) struct VanillaLauncherBehind {
+    stop: std::sync::Arc<AtomicBool>,
+    shown: std::sync::Arc<AtomicBool>,
+    refocus: std::sync::Arc<AtomicBool>,
+}
+
+#[cfg(target_os = "windows")]
+impl VanillaLauncherBehind {
+    pub(crate) fn start(app: &tauri::AppHandle, refocus: bool) -> Self {
+        use windows_sys::Win32::Foundation::{HWND, RECT};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetForegroundWindow, GetWindow, GetWindowRect, SetWindowPos, GW_HWNDNEXT, HWND_BOTTOM,
+            SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        };
+        /// Whether `target` comes after `h` in the window stack (is below it).
+        fn is_below(h: HWND, target: HWND) -> bool {
+            let mut w = h;
+            for _ in 0..10_000 {
+                // SAFETY: walking the window list; a null handle ends it.
+                w = unsafe { GetWindow(w, GW_HWNDNEXT) };
+                if w.is_null() {
+                    return false;
+                }
+                if w == target {
+                    return true;
+                }
+            }
+            false
+        }
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let shown = std::sync::Arc::new(AtomicBool::new(false));
+        let refocus_on = std::sync::Arc::new(AtomicBool::new(refocus));
+        let (stop_t, shown_t, refocus_t, app) = (stop.clone(), shown.clone(), refocus_on.clone(), app.clone());
+        std::thread::spawn(move || {
+            let mut last_refocus: Option<std::time::Instant> = None;
+            while !stop_t.load(Ordering::SeqCst) && !shown_t.load(Ordering::SeqCst) {
+                // Rec EOS's window, when it's up on screen.
+                let main = app.get_webview_window("main").filter(|w| {
+                    w.is_visible().unwrap_or(false) && !w.is_minimized().unwrap_or(true)
+                });
+                let cover = main.as_ref().and_then(|w| {
+                    let hwnd = w.hwnd().ok()?.0 as HWND;
+                    let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+                    // SAFETY: Rec EOS's own live window.
+                    (unsafe { GetWindowRect(hwnd, &mut r) } != 0).then_some((hwnd, r))
+                });
+                // SAFETY: plain window calls on handles just enumerated; a
+                // handle that has gone stale makes them fail harmlessly.
+                let front = unsafe { GetForegroundWindow() };
+                for h in vanilla_launcher_windows() {
+                    let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+                    unsafe { GetWindowRect(h, &mut r) };
+                    match cover {
+                        Some((main_hwnd, m)) => {
+                            let x = m.left + ((m.right - m.left) - (r.right - r.left)) / 2;
+                            let y = m.top + ((m.bottom - m.top) - (r.bottom - r.top)) / 2;
+                            let above = is_below(h, main_hwnd);
+                            let off = (r.left - x).abs() > 2 || (r.top - y).abs() > 2;
+                            if above && off {
+                                // Under Rec EOS (inserted after it), centred.
+                                unsafe { SetWindowPos(h, main_hwnd, x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE) };
+                            } else if above {
+                                unsafe { SetWindowPos(h, main_hwnd, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE) };
+                            } else if off {
+                                unsafe { SetWindowPos(h, std::ptr::null_mut(), x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE | 0x0004 /* SWP_NOZORDER */) };
+                            }
+                        }
+                        None if h == front => {
+                            unsafe { SetWindowPos(h, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE) };
+                        }
+                        None => {}
+                    }
+                    let due = last_refocus.is_none_or(|t| t.elapsed() >= std::time::Duration::from_millis(1500));
+                    if refocus_t.load(Ordering::SeqCst) && h == front && due {
+                        if let Some(w) = &main {
+                            let _ = w.set_focus();
+                            last_refocus = Some(std::time::Instant::now());
+                        }
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        });
+        Self { stop, shown, refocus: refocus_on }
+    }
+
+    /// The launcher is about to start the game: let it keep the focus, so it
+    /// can hand it to the game's window (it's still kept out of sight).
+    pub(crate) fn stop_refocus(&self) {
+        self.refocus.store(false, Ordering::SeqCst);
+    }
+
+    /// The launcher was brought forward because it needs the user: leave it there.
+    pub(crate) fn mark_shown(&self) {
+        self.shown.store(true, Ordering::SeqCst);
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for VanillaLauncherBehind {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
+}
+
+/// How long Vanilla's game may take to appear after Launch is pressed.
+const VANILLA_GAME_APPEAR_SECS: u64 = 120;
+/// How long the launcher stays after the game appears, so it finishes its own
+/// part of the start (its anti-cheat guard keeps running on its own).
+const VANILLA_LAUNCHER_LINGER_SECS: u64 = 15;
+
+/// After Launch: keep the launcher out of sight while the game starts, then,
+/// once the game is running, close the launcher's window — it isn't needed
+/// while the game runs, and the next Play opens it again. Closed the way its
+/// own X button does (a close request), never killed, and only its window: the
+/// `--anticheat-guard` process beside the game has no window and keeps running
+/// (tested: the game plays on). Nothing is closed if the game never shows up or
+/// has already closed.
+fn close_vanilla_launcher_once_game_runs(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        #[cfg(target_os = "windows")]
+        let behind = VanillaLauncherBehind::start(&app, false);
+        let started = std::time::Instant::now();
+        let mut seen = false;
+        while started.elapsed().as_secs() < VANILLA_GAME_APPEAR_SECS {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            if game_running(&app) {
+                seen = true;
+                break;
+            }
+        }
+        // The game's window takes over from here.
+        #[cfg(target_os = "windows")]
+        drop(behind);
+        if !seen {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(VANILLA_LAUNCHER_LINGER_SECS)).await;
+        if game_running(&app) {
+            close_vanilla_launcher_windows();
+        }
+    });
+}
+
+/// Ask Vanilla's launcher window to close.
+#[cfg(target_os = "windows")]
+fn close_vanilla_launcher_windows() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+    for h in vanilla_launcher_windows() {
+        // SAFETY: posting to a window handle that was just enumerated.
+        unsafe { PostMessageW(h, WM_CLOSE, 0, 0) };
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn close_vanilla_launcher_windows() {}
 
 /// Folders where Vanilla's launcher keeps the game: `<installDirectory>\Vanilla`
 /// (its layout), then `<installDirectory>` itself. `installDirectory` falls back
@@ -583,6 +864,7 @@ fn run_vanilla_play_automation(
         .spawn()
         .map_err(|e| format!("Couldn't run the launcher automation: {}", e))?;
 
+    let behind = VanillaLauncherBehind::start(app, true);
     let mut result = "no_play".to_string();
     let mut mode_set = false;
     if let Some(stdout) = child.stdout.take() {
@@ -590,6 +872,10 @@ fn run_vanilla_play_automation(
             let line = line.trim();
             if let Some(state) = line.strip_prefix("state:") {
                 let _ = app.emit("vanilla-autoplay", state);
+            } else if line == "launcher:shown" {
+                behind.mark_shown();
+            } else if line == "launch:pressing" {
+                behind.stop_refocus();
             } else if line == "mode:set" {
                 mode_set = true;
             } else if VANILLA_AUTOPLAY_RESULTS.contains(&line) {
@@ -702,6 +988,9 @@ while ((Get-Date) -lt $deadline) {
     try {
       # Not minimised afterwards: the launcher would save the minimised size
       # (160x28) as its window size. The game's window covers it anyway.
+      # Rec EOS stops taking the focus back first: the launcher needs it to
+      # hand it to the game's window.
+      Say 'launch:pressing'; Start-Sleep -Milliseconds 200
       $play.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
       if ($modeSet) { Say 'mode:set' }
       $status = 'invoked'
@@ -720,7 +1009,9 @@ while ((Get-Date) -lt $deadline) {
   $need = if ($state -eq 'signin') { 4 } else { 2 }
   if ($state -and $seen -eq $need) {
     Say "state:$state"
-    Show-Launcher $top
+    # Missing or outdated game files are Rec EOS's job (it downloads them and
+    # hands them over), so the launcher stays out of sight for those.
+    if ($state -eq 'signin' -or $state -eq 'busy') { Show-Launcher $top }
     if ($state -eq 'signin') { $deadline = (Get-Date).AddMinutes(5) }
     else { $status = "needs_$state"; break }
   }
@@ -793,6 +1084,9 @@ fn launch_game_impl(
     if crate::download::install_incomplete(&client_dir) {
         return Err("The last install of the client didn't finish. Download it again from Home.".into());
     }
+
+    // The saved window size is shared by every client; don't start tiny.
+    let resolution_fixed = fix_tiny_game_resolution();
 
     // Prefer the saved exe path; otherwise search the client dir for a known exe.
     let mut exe_path = match network {
@@ -978,7 +1272,7 @@ fn launch_game_impl(
         }
     }
 
-    Ok(json!({ "success": true, "pid": pid_value }))
+    Ok(json!({ "success": true, "pid": pid_value, "resolutionFixed": resolution_fixed }))
 }
 
 /// Forcibly stops the game this launcher started: every recognised game

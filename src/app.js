@@ -4389,8 +4389,21 @@ $('btnReinstall')?.addEventListener('click', () => {
   showModal(reinstallModal);
 });
 
-$('reinstallConfirmBtn')?.addEventListener('click', () => {
+$('reinstallConfirmBtn')?.addEventListener('click', async () => {
   closeReinstallModal();
+  // Vanilla: a download only fetches what's missing or wrong, so a reinstall
+  // first uninstalls (as Vanilla's launcher would), then downloads it all.
+  if (activeNetwork === 'vanilla') {
+    closeManageMenu();
+    addLog('Reinstall initiated: removing the Vanilla game first...', 'info', 'install');
+    const removed = await window.radium?.uninstallClient();
+    if (!removed?.success) {
+      const err = removed?.error || 'Unknown error';
+      addLog(`Reinstall stopped: ${err}`, 'error', 'install');
+      toast(`Reinstall stopped: ${err}`, 'error', 6000);
+      return;
+    }
+  }
   const ds = $('downloadSection'); if (ds) ds.style.display = 'flex';
   document.body.classList.remove('client-installed');
   // The gear that opens it lives in the installed-only bar and has just
@@ -5279,9 +5292,10 @@ let pendingJoin = null;
 
 // EXPERIMENTAL: open Vanilla's launcher and press its Play button for the user,
 // via UI Automation in the backend. The launcher (signed in) does the real
-// launch and makes the anti-cheat session — we only automate the click. If the
-// launcher isn't ready (not signed in, game not installed in it, updating), it's
-// brought to the front and the user is told what to do there.
+// launch and makes the anti-cheat session — we only automate the click. It
+// works behind Rec EOS and comes to the front only when it needs the user
+// (sign-in, a Screen/VR choice, busy); missing game files are fetched by Rec
+// EOS. Once the game runs, the backend closes the launcher's window.
 /// Whether the last Vanilla game download had Vanilla's launcher sign it off
 /// (set by runClientDownload; null until one finishes).
 let lastVanillaSignOff = null;
@@ -5318,6 +5332,7 @@ async function autoplayVanilla({ afterSignOff = false } = {}) {
   isGameLaunching = false;
 
   const status = result?.autoplay;
+  if (result?.resolutionFixed) addLog("The game's saved window size was tiny, so it was reset to your screen's size.", 'info', 'game');
   const modeName = playMode === 'vr' ? 'VR' : 'Screen';
   if (status === 'invoked') {
     // modeSet: we picked the mode in Vanilla's launcher (or its Play button
@@ -5329,6 +5344,7 @@ async function autoplayVanilla({ afterSignOff = false } = {}) {
       addLog(`Pressed Play in Vanilla's launcher, but couldn't find its Screen/VR switch to pick ${modeName} — it uses the mode selected there.`, 'warn', 'game');
       toast("Launching Vanilla — using the mode picked in Vanilla's launcher.", 'info', 5000);
     }
+    addLog("Vanilla's launcher closes by itself once the game is running.", 'info', 'game');
   } else if (status === 'needs_mode') {
     addLog(`Vanilla's launcher only offered Play for the other mode. Pick ${modeName} there and press Play.`, 'warn', 'game');
     toast(`Pick ${modeName} in Vanilla's launcher, then press Play there.`, 'info', 7000);
@@ -5415,6 +5431,7 @@ async function doLaunch() {
   } else {
     // .bat launches report no PID (the cmd.exe wrapper's PID is meaningless).
     const pidPart = (result.pid !== null && result.pid !== undefined) ? ` (PID ${result.pid})` : '';
+    if (result.resolutionFixed) addLog("The game's saved window size was tiny, so it was reset to your screen's size.", 'info', 'game');
     addLog(`Game running${pidPart} — mode: ${playMode}`, 'ok', 'game');
     toast(`${networkInfo().label} launched in ${playMode.toUpperCase()} mode!`, 'ok');
     // launch_game has already hidden the window (tray mode) or quit; this

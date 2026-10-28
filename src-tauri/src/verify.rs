@@ -1131,6 +1131,14 @@ fn installed_client_dir(app: &tauri::AppHandle, network: Network) -> Result<Stri
 #[tauri::command]
 pub async fn verify_client(app: tauri::AppHandle, network: Option<String>) -> Value {
     let network = Network::parse(network.as_deref());
+    // Vanilla's game is checked against Vanilla's own file list.
+    if network == Network::Vanilla {
+        return match crate::vanilla_game::verify(app).await {
+            Ok(value) => value,
+            Err(e) if e == download::CANCELLED => json!({ "status": "cancelled" }),
+            Err(e) => json!({ "status": "error", "error": e }),
+        };
+    }
     match verify_impl(&app, network).await {
         Ok(value) => value,
         Err(e) if e == download::CANCELLED => json!({ "status": "cancelled" }),
@@ -1192,6 +1200,14 @@ async fn verify_impl(app: &tauri::AppHandle, network: Network) -> Result<Value, 
 #[tauri::command]
 pub async fn repair_client(app: tauri::AppHandle, network: Option<String>, full: Option<bool>) -> Value {
     let network = Network::parse(network.as_deref());
+    // Vanilla: a normal game download, which fetches exactly the files the
+    // check failed (it forgot them; every other file is remembered as fine).
+    if network == Network::Vanilla {
+        return match crate::vanilla_game::download(app).await {
+            Ok(v) => json!({ "success": true, "repaired": v.get("downloadedFiles").and_then(Value::as_u64).unwrap_or(0) }),
+            Err(e) => json!({ "success": false, "error": e }),
+        };
+    }
     match repair_impl(&app, network, full.unwrap_or(false)).await {
         Ok(value) => value,
         Err(e) => json!({ "success": false, "error": e }),

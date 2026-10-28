@@ -1624,6 +1624,12 @@ pub fn stella_patch_dir(app_data_dir: &std::path::Path) -> PathBuf {
 /// is injected into the game — a quarantined patch is as broken as a
 /// quarantined client.
 pub fn exclusion_dirs_for(config: &Config, network: Network, app_data_dir: &std::path::Path) -> Vec<String> {
+    // Vanilla's game is in Vanilla's launcher's game folder, not a Rec EOS one.
+    if network == Network::Vanilla {
+        if let Some(dir) = crate::game::vanilla_launcher_game_dir() {
+            return vec![dir];
+        }
+    }
     let mut dirs = vec![client_dir_for(config, network, app_data_dir)];
     if network == Network::Stella {
         dirs.push(stella_patch_dir(app_data_dir).to_string_lossy().to_string());

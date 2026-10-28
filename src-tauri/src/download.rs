@@ -1656,6 +1656,13 @@ async fn uninstall_client_impl(
     app: tauri::AppHandle,
     network: Network,
 ) -> Result<Value, String> {
+    // Vanilla's game lives in Vanilla's launcher's folder; uninstalled the
+    // way that launcher does it.
+    if network == Network::Vanilla {
+        crate::vanilla_game::uninstall(&app).await?;
+        config::update(&app, |cfg| cfg.clear_client_install(network))?;
+        return Ok(json!({ "success": true }));
+    }
     if game::game_running(&app) {
         return Err("Cannot uninstall while the game is running.".into());
     }
