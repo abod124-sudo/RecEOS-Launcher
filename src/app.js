@@ -3181,8 +3181,9 @@ async function checkInstall() {
     }
     setClientUpdateButton(clientUpdateInfo?.hasUpdate ? 'update' : 'check', clientUpdateInfo);
     const verLabel = result?.clientVersion ? `v${result.clientVersion}` : 'unknown version';
-    const buildLabel = result?.clientBuild || 'unrecorded build';
-    logInstallState('client', `Game client found (${verLabel}, build ${buildLabel}): ${result.exePath || 'client dir'}`, 'ok');
+    // The build id is only tracked on Radium; elsewhere it's a leftover Radium id.
+    const buildLabel = activeNetwork === 'radium' ? `, build ${result?.clientBuild || 'unrecorded'}` : '';
+    logInstallState('client', `Game client found (${verLabel}${buildLabel}): ${result.exePath || 'client dir'}`, 'ok');
 
     // Check if the game is already running on startup. Only log the transition:
     // checkInstall() re-runs on every settings autosave, so logging every time

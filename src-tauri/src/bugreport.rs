@@ -326,6 +326,11 @@ impl Facts {
     fn client_line(&self) -> String {
         if self.installed {
             let version = if self.client_version.is_empty() { String::new() } else { format!("{} · ", self.client_version) };
+            // The build id only means something on Radium; every other
+            // network's install carries the same leftover Radium id.
+            if self.network != config::Network::Radium {
+                return format!("{version}{}", self.client_status);
+            }
             format!("{version}build {} · {}", self.client_build, self.client_status)
         } else {
             self.client_status.to_string()
