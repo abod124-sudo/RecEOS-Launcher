@@ -74,15 +74,17 @@ An **unofficial** launcher for Rec Room revival servers.
 current build from the [Releases page](https://github.com/abod124-sudo/RecEOS-Launcher/releases/latest).
 It's an installer for Windows x64.
 
-Already on Radium Launcher? 4.0.0 installs over it and keeps your settings and game
-files; it just has the new name.
+Already on Radium Launcher? The installer moves it over and keeps your settings and game
+files: the app goes from `%LOCALAPPDATA%\Radium Launcher` to `%LOCALAPPDATA%\Rec EOS Launcher`
+and your shortcuts, taskbar pin and "Start with Windows" setting follow it. Settings and logs move
+from `com.radium.launcher` to `com.receos.launcher` the first time the new version starts.
 
 
 
 ## File Locations
 
 ```
-%APPDATA%\com.radium.launcher\
+%APPDATA%\com.receos.launcher\
   ├── config.json         - saved settings
   ├── client-receos\      - Rec EOS game files
   ├── client\             - Radium game files

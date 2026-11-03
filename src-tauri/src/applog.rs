@@ -4,7 +4,7 @@
 //! only in the webview: close the launcher and it was gone, together with
 //! whatever explained why it had to be closed. The page now hands its lines to
 //! [`log_append`] as well, and each run of the launcher gets a file of its own
-//! in `%LOCALAPPDATA%\com.radium.launcher\logs`:
+//! in `%LOCALAPPDATA%\com.receos.launcher\logs`:
 //!
 //! ```text
 //! launcher.log     this session

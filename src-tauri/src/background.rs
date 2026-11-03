@@ -19,10 +19,14 @@ use tauri::{AppHandle, Emitter, Manager};
 /// Passed by the startup entry: start in the tray, window hidden.
 pub const BACKGROUND_ARG: &str = "--background";
 
-/// The registry value name. Must match `${PRODUCTNAME}` in installer.nsi,
+/// The registry value name. Must match `${INSTALLNAME}` in installer.nsi,
 /// whose uninstaller deletes it.
 #[cfg(windows)]
-const RUN_VALUE_NAME: &str = "Radium Launcher";
+const RUN_VALUE_NAME: &str = "Rec EOS Launcher";
+/// The name 4.0.0 and older used. The installer renames it; the launcher
+/// does too (see `apply_startup_default`) in case it ran some other way.
+#[cfg(windows)]
+const LEGACY_RUN_VALUE_NAME: &str = "Radium Launcher";
 #[cfg(windows)]
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 
@@ -801,6 +805,11 @@ pub fn apply_startup_default(app: &AppHandle) {
     // Unreadable right now: the default is applied on a later start instead,
     // rather than recorded over settings this can't see.
     let Ok(mut cfg) = crate::config::ensure_config(app) else { return };
+    // An entry under the pre-rename name: turn it into one under the new
+    // name, so "on" stays on and there is never two of them.
+    if autostart::take_legacy() && autostart::current().is_none() {
+        let _ = set_autostart(true);
+    }
     if !cfg.autostart_initialized {
         let _ = set_autostart(true);
         cfg.autostart_initialized = true;
@@ -816,7 +825,7 @@ pub fn apply_startup_default(app: &AppHandle) {
 
 #[cfg(windows)]
 mod autostart {
-    use super::{RUN_KEY, RUN_VALUE_NAME};
+    use super::{LEGACY_RUN_VALUE_NAME, RUN_KEY, RUN_VALUE_NAME};
     use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
     use windows_sys::Win32::System::Registry::{
         RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegGetValueW, RegSetValueExW, HKEY,
@@ -853,8 +862,12 @@ mod autostart {
 
     /// The startup command, if the entry exists.
     pub fn current() -> Option<String> {
+        read(RUN_VALUE_NAME)
+    }
+
+    fn read(value: &str) -> Option<String> {
         let key = open(KEY_READ).ok()?;
-        let name = wide(RUN_VALUE_NAME);
+        let name = wide(value);
         let mut buf = vec![0u16; 1024];
         let mut bytes = (buf.len() * 2) as u32;
         // SAFETY: `buf` holds `bytes` bytes; the value is read as REG_SZ only.
@@ -888,8 +901,18 @@ mod autostart {
     }
 
     pub fn remove() -> Result<(), String> {
+        remove_named(RUN_VALUE_NAME)
+    }
+
+    /// Removes the entry under the pre-rename name. True if there was one.
+    pub fn take_legacy() -> bool {
+        let existed = read(LEGACY_RUN_VALUE_NAME).is_some();
+        existed && remove_named(LEGACY_RUN_VALUE_NAME).is_ok()
+    }
+
+    fn remove_named(value: &str) -> Result<(), String> {
         let key = open(KEY_WRITE)?;
-        let name = wide(RUN_VALUE_NAME);
+        let name = wide(value);
         // SAFETY: `name` is NUL-terminated.
         let rc = unsafe { RegDeleteValueW(key.0, name.as_ptr()) };
         if rc != ERROR_SUCCESS && rc != ERROR_FILE_NOT_FOUND {
@@ -909,6 +932,9 @@ mod autostart {
     }
     pub fn remove() -> Result<(), String> {
         Ok(())
+    }
+    pub fn take_legacy() -> bool {
+        false
     }
 }
 

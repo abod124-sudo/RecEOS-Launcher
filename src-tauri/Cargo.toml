@@ -1,12 +1,12 @@
 [package]
-name = "radium-launcher"
+name = "rec-eos-launcher"
 version = "4.0.0"
 description = "Radium — Custom Rec Room Private Server Launcher"
 authors = ["abod124-sudo"]
 edition = "2021"
 
 [lib]
-name = "radium_launcher_lib"
+name = "rec_eos_launcher_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [build-dependencies]

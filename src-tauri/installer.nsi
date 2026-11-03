@@ -17,9 +17,11 @@
 ;      by itself.
 ;   4. The launcher starts after every install.
 ;   5. The old Electron build of the launcher is uninstalled first.
-;   6. INSTALLNAME, not PRODUCTNAME, names the install folder, the registry
-;      keys and the Run value, so the rename to "Rec EOS Launcher" updates
-;      old installs in place; shortcuts with the old name are removed.
+;   6. INSTALLNAME names the install folder, the registry keys and the Run
+;      value. It is now "Rec EOS Launcher"; an install still under
+;      LEGACYINSTALLNAME ("Radium Launcher") is moved over by MigrateLegacy:
+;      old folder and registry keys removed, shortcuts and taskbar pins
+;      re-pointed, the startup entry renamed.
 Unicode true
 ManifestDPIAware true
 ; Add in `dpiAwareness` `PerMonitorV2` to manifest for Windows 10 1607+ (note this should not affect lower versions since they should be able to ignore this and pick up `dpiAware` `true` set by `ManifestDPIAware true`)
@@ -55,9 +57,17 @@ ${StrLoc}
 
 !define MANUFACTURER "{{manufacturer}}"
 !define PRODUCTNAME "{{product_name}}"
-; Radium: the install folder, the registry keys and the Run value keep the
-; launcher's old name, so "Radium Launcher" installs update in place.
-!define INSTALLNAME "Radium Launcher"
+; Radium: names the install folder, the registry keys and the Run value
+; (background.rs RUN_VALUE_NAME). LEGACYINSTALLNAME is what 4.0.0 and older
+; used; MigrateLegacy moves those installs over.
+!define INSTALLNAME "Rec EOS Launcher"
+!define LEGACYINSTALLNAME "Radium Launcher"
+!define LEGACYBINARYNAME "radium-launcher" ; the exe of those installs
+!define LEGACYBUNDLEID "com.radium.launcher" ; their data folders, see migrate.rs
+!define LEGACYUNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${LEGACYINSTALLNAME}"
+!define RUNKEY "Software\Microsoft\Windows\CurrentVersion\Run"
+!define MUICACHEKEY "Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\MuiCache"
+!define TASKBARPINS "$APPDATA\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar"
 !define VERSION "{{version}}"
 !define VERSIONWITHBUILD "{{version_with_build}}"
 !define HOMEPAGE "{{homepage}}"
@@ -95,6 +105,7 @@ Var NoShortcutMode
 Var PlaceDesktop ; Radium: /DESKTOP
 Var WixMode
 Var OldMainBinaryName
+Var LegacyInstDir ; Radium: an install under LEGACYINSTALLNAME, if any
 
 Name "${PRODUCTNAME}"
 BrandingText "${COPYRIGHT}"
@@ -670,6 +681,8 @@ Section Install
   !endif
 
   !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+  ; Radium: the old exe has another name; it holds its data folders open.
+  !insertmacro CheckIfAppIsRunning "${LEGACYBINARYNAME}.exe" "${PRODUCTNAME}"
 
   ; Radium: uninstall the legacy Electron-builder version, silently.
   ReadRegStr $R0 HKCU "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\5f3d1d92-0efd-5de0-8d08-6ed57216c90a" "UninstallString"
@@ -681,16 +694,14 @@ Section Install
   ; Radium: the launcher was renamed. The desktop shortcut is always made
   ; again under the new name, so the old one goes. An update does not make a
   ; Start menu shortcut, so the old one is renamed instead.
-  !if "${INSTALLNAME}" != "${PRODUCTNAME}"
-    Delete "$DESKTOP\${INSTALLNAME}.lnk"
-    ${If} ${FileExists} "$SMPROGRAMS\${INSTALLNAME}.lnk"
-      ${If} ${FileExists} "$SMPROGRAMS\${PRODUCTNAME}.lnk"
-        Delete "$SMPROGRAMS\${INSTALLNAME}.lnk"
-      ${Else}
-        Rename "$SMPROGRAMS\${INSTALLNAME}.lnk" "$SMPROGRAMS\${PRODUCTNAME}.lnk"
-      ${EndIf}
+  Delete "$DESKTOP\${LEGACYINSTALLNAME}.lnk"
+  ${If} ${FileExists} "$SMPROGRAMS\${LEGACYINSTALLNAME}.lnk"
+    ${If} ${FileExists} "$SMPROGRAMS\${PRODUCTNAME}.lnk"
+      Delete "$SMPROGRAMS\${LEGACYINSTALLNAME}.lnk"
+    ${Else}
+      Rename "$SMPROGRAMS\${LEGACYINSTALLNAME}.lnk" "$SMPROGRAMS\${PRODUCTNAME}.lnk"
     ${EndIf}
-  !endif
+  ${EndIf}
 
   ; Copy main executable
   File "${MAINBINARYSRCPATH}"
@@ -766,6 +777,10 @@ Section Install
     WriteRegStr SHCTX "${UNINSTKEY}" "HelpLink" "${HOMEPAGE}"
   !endif
 
+  ; Radium: move an install under the old "Radium Launcher" name over. Before
+  ; the shortcuts below, so the ones it re-points are not made twice.
+  Call MigrateLegacy
+
   ; Create start menu shortcut
   !insertmacro MUI_STARTMENU_WRITE_BEGIN Application
     Call CreateOrUpdateStartMenuShortcut
@@ -775,6 +790,18 @@ Section Install
   ; checkbox would otherwise offer it, is skipped. The function itself still
   ; honours update mode and /NS.
   Call CreateOrUpdateDesktopShortcut
+
+  ; Radium: Windows caches an exe's icon and display name by path. Without
+  ; this, an exe that stays where an older build was keeps showing that
+  ; build's logo and name when pinned to the taskbar.
+  ; Drop the cached name (MuiCache), then make Explorer reload its icons.
+  DeleteRegValue HKCU "${MUICACHEKEY}" "$INSTDIR\${MAINBINARYNAME}.exe.FriendlyAppName"
+  DeleteRegValue HKCU "${MUICACHEKEY}" "$INSTDIR\${MAINBINARYNAME}.exe.ApplicationCompany"
+  ${If} ${FileExists} "$SYSDIR\ie4uinit.exe"
+    nsExec::Exec '"$SYSDIR\ie4uinit.exe" -show'
+    Pop $0
+  ${EndIf}
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)' ; SHCNE_ASSOCCHANGED
 
   !ifmacrodef NSIS_HOOK_POSTINSTALL
     !insertmacro NSIS_HOOK_POSTINSTALL
@@ -900,7 +927,8 @@ Section Uninstall
   ; If it doesn't exist, it does nothing.
   ; We do this when not updating (to preserve the registry value on updates)
   ${If} $UpdateMode <> 1
-    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${INSTALLNAME}" ; Radium: background.rs RUN_VALUE_NAME
+    DeleteRegValue HKCU "${RUNKEY}" "${INSTALLNAME}" ; Radium: background.rs RUN_VALUE_NAME
+    DeleteRegValue HKCU "${RUNKEY}" "${LEGACYINSTALLNAME}" ; Radium: and the pre-rename one
   ${EndIf}
 
   ; Delete app data if the checkbox is selected
@@ -919,6 +947,8 @@ Section Uninstall
     SetShellVarContext current
     RmDir /r "$APPDATA\${BUNDLEID}"
     RmDir /r "$LOCALAPPDATA\${BUNDLEID}"
+    RmDir /r "$APPDATA\${LEGACYBUNDLEID}"
+    RmDir /r "$LOCALAPPDATA\${LEGACYBUNDLEID}"
   ${EndIf}
 
   !ifmacrodef NSIS_HOOK_POSTUNINSTALL
@@ -934,8 +964,134 @@ SectionEnd
 
 Function RestorePreviousInstallLocation
   ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
-  StrCmp $4 "" +2 0
+  ${If} $4 != ""
     StrCpy $INSTDIR $4
+    Return
+  ${EndIf}
+
+  ; Radium: nothing under the new name yet. An install under the old name
+  ; moves to a folder of the new name beside it ("...\Radium Launcher" ->
+  ; "...\Rec EOS Launcher"); one in a folder the user named stays put.
+  Call FindLegacyInstall
+  ${If} $LegacyInstDir != ""
+    StrLen $5 "\${LEGACYINSTALLNAME}"
+    IntOp $5 0 - $5
+    StrCpy $6 $LegacyInstDir "" $5
+    ${If} $6 == "\${LEGACYINSTALLNAME}"
+      StrCpy $6 $LegacyInstDir $5
+      StrCpy $INSTDIR "$6\${INSTALLNAME}"
+    ${Else}
+      StrCpy $INSTDIR $LegacyInstDir
+    ${EndIf}
+  ${EndIf}
+FunctionEnd
+
+; Radium: sets $LegacyInstDir to an install made under LEGACYINSTALLNAME
+; ("Radium Launcher", 4.0.0 and older), or "" if there is none.
+Function FindLegacyInstall
+  ReadRegStr $LegacyInstDir SHCTX "${MANUKEY}\${LEGACYINSTALLNAME}" ""
+  ${If} $LegacyInstDir == ""
+    ${If} ${FileExists} "$LOCALAPPDATA\${LEGACYINSTALLNAME}\${LEGACYBINARYNAME}.exe"
+    ${OrIf} ${FileExists} "$LOCALAPPDATA\${LEGACYINSTALLNAME}\${MAINBINARYNAME}.exe"
+      StrCpy $LegacyInstDir "$LOCALAPPDATA\${LEGACYINSTALLNAME}"
+    ${EndIf}
+  ${EndIf}
+  ${IfNot} ${FileExists} "$LegacyInstDir\${LEGACYBINARYNAME}.exe"
+  ${AndIfNot} ${FileExists} "$LegacyInstDir\${MAINBINARYNAME}.exe"
+    StrCpy $LegacyInstDir ""
+  ${EndIf}
+FunctionEnd
+
+; Radium: re-points a shortcut at a legacy exe to the installed one, its
+; "Start in" folder and AppUserModelId too. Taskbar pins are shortcuts too,
+; and stay pinned. Clobbers $0-$5.
+!macro RetargetShortcutIfTarget shortcut oldTarget
+  ${If} ${FileExists} "${shortcut}"
+    !insertmacro IsShortcutTarget "${shortcut}" "${oldTarget}"
+    Pop $0
+    ${If} $0 = 1
+      !insertmacro ComHlpr_CreateInProcInstance ${CLSID_ShellLink} ${IID_IShellLink} r0 ""
+      ${If} $0 P<> 0
+        ${IUnknown::QueryInterface} $0 '("${IID_IPersistFile}",.r1)'
+        ${If} $1 P<> 0
+          ${IPersistFile::Load} $1 '("${shortcut}", ${STGM_READWRITE})'
+          ${IShellLink::SetPath} $0 '(w "$INSTDIR\${MAINBINARYNAME}.exe")'
+          ${IShellLink::SetWorkingDirectory} $0 '(w "$INSTDIR")'
+          ${IPersistFile::Save} $1 '("${shortcut}",1)'
+          ${IUnknown::Release} $1 ""
+        ${EndIf}
+        ${IUnknown::Release} $0 ""
+      ${EndIf}
+      !insertmacro SetLnkAppUserModelId "${shortcut}"
+    ${EndIf}
+  ${EndIf}
+!macroend
+
+!macro RetargetLegacyShortcut shortcut
+  !insertmacro RetargetShortcutIfTarget "${shortcut}" "$LegacyInstDir\${LEGACYBINARYNAME}.exe"
+  !insertmacro RetargetShortcutIfTarget "${shortcut}" "$LegacyInstDir\${MAINBINARYNAME}.exe"
+!macroend
+
+; Radium: moves an install under LEGACYINSTALLNAME over to this one. Runs
+; after the new files are in place; the old exe is not running (the
+; CheckIfAppIsRunning above matches it by name too). Safe to run again:
+; once the old folder is gone, there is nothing left to find.
+Function MigrateLegacy
+  Call FindLegacyInstall
+  ${If} $LegacyInstDir == ""
+    Return
+  ${EndIf}
+
+  ; Shortcuts and pins, whatever they are called.
+  !insertmacro RetargetLegacyShortcut "${TASKBARPINS}\${LEGACYINSTALLNAME}.lnk"
+  !insertmacro RetargetLegacyShortcut "${TASKBARPINS}\${PRODUCTNAME}.lnk"
+  !insertmacro RetargetLegacyShortcut "$SMPROGRAMS\${PRODUCTNAME}.lnk"
+  !insertmacro RetargetLegacyShortcut "$SMPROGRAMS\${LEGACYINSTALLNAME}.lnk"
+  !insertmacro RetargetLegacyShortcut "$DESKTOP\${PRODUCTNAME}.lnk"
+  !insertmacro RetargetLegacyShortcut "$DESKTOP\${LEGACYINSTALLNAME}.lnk"
+
+  ${If} $LegacyInstDir == $INSTDIR
+    ; Installed over in place (/D pointed here, or custom folder): remove the
+    ; old binary name and registry keys, keep the folder itself.
+    Delete "$INSTDIR\${LEGACYBINARYNAME}.exe"
+    DeleteRegValue HKCU "${MUICACHEKEY}" "$INSTDIR\${LEGACYBINARYNAME}.exe.FriendlyAppName"
+    DeleteRegValue HKCU "${MUICACHEKEY}" "$INSTDIR\${LEGACYBINARYNAME}.exe.ApplicationCompany"
+    Goto legacy_registry
+  ${EndIf}
+  DetailPrint "Moving ${LEGACYINSTALLNAME} to ${INSTALLNAME}..."
+
+  ; The old folder: only the files an install put there, then the folder
+  ; itself if that left it empty.
+  Delete "$LegacyInstDir\${LEGACYBINARYNAME}.exe"
+  Delete "$LegacyInstDir\${MAINBINARYNAME}.exe"
+  {{#each resources}}
+    Delete "$LegacyInstDir\\{{this.[1]}}"
+  {{/each}}
+  {{#each binaries}}
+    Delete "$LegacyInstDir\\{{this}}"
+  {{/each}}
+  Delete "$LegacyInstDir\uninstall.exe"
+  {{#each resources_ancestors}}
+  RMDir "$LegacyInstDir\\{{this}}"
+  {{/each}}
+  RMDir "$LegacyInstDir"
+  DeleteRegValue HKCU "${MUICACHEKEY}" "$LegacyInstDir\${LEGACYBINARYNAME}.exe.FriendlyAppName"
+  DeleteRegValue HKCU "${MUICACHEKEY}" "$LegacyInstDir\${LEGACYBINARYNAME}.exe.ApplicationCompany"
+  DeleteRegValue HKCU "${MUICACHEKEY}" "$LegacyInstDir\${MAINBINARYNAME}.exe.FriendlyAppName"
+  DeleteRegValue HKCU "${MUICACHEKEY}" "$LegacyInstDir\${MAINBINARYNAME}.exe.ApplicationCompany"
+
+  legacy_registry:
+  ; "Start with Windows": keep it on if it was, under the new name and path.
+  ReadRegStr $0 HKCU "${RUNKEY}" "${LEGACYINSTALLNAME}"
+  ${If} $0 != ""
+    DeleteRegValue HKCU "${RUNKEY}" "${LEGACYINSTALLNAME}"
+    WriteRegStr HKCU "${RUNKEY}" "${INSTALLNAME}" '"$INSTDIR\${MAINBINARYNAME}.exe" --background'
+  ${EndIf}
+
+  ; Apps & features and the saved install location: the new keys were
+  ; written above, so the old entry would only be a second, broken one.
+  DeleteRegKey SHCTX "${LEGACYUNINSTKEY}"
+  DeleteRegKey SHCTX "${MANUKEY}\${LEGACYINSTALLNAME}"
 FunctionEnd
 
 Function Skip

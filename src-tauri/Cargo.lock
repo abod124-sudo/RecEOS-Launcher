@@ -3282,35 +3282,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
-name = "radium-launcher"
-version = "4.0.0"
-dependencies = [
- "base64 0.22.1",
- "crc32fast",
- "flate2",
- "futures-util",
- "image",
- "minisign-verify",
- "p256",
- "regex",
- "reqwest 0.12.28",
- "rfd",
- "serde",
- "serde_json",
- "sha2",
- "steamworks",
- "tauri",
- "tauri-build",
- "tauri-plugin-shell",
- "tauri-plugin-single-instance",
- "tokio",
- "tokio-tungstenite",
- "windows-sys 0.59.0",
- "zeroize",
- "zip",
-]
-
-[[package]]
 name = "rand"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3374,6 +3345,35 @@ name = "raw-window-handle"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
+
+[[package]]
+name = "rec-eos-launcher"
+version = "4.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "crc32fast",
+ "flate2",
+ "futures-util",
+ "image",
+ "minisign-verify",
+ "p256",
+ "regex",
+ "reqwest 0.12.28",
+ "rfd",
+ "serde",
+ "serde_json",
+ "sha2",
+ "steamworks",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-shell",
+ "tauri-plugin-single-instance",
+ "tokio",
+ "tokio-tungstenite",
+ "windows-sys 0.59.0",
+ "zeroize",
+ "zip",
+]
 
 [[package]]
 name = "redox_syscall"

@@ -7,6 +7,7 @@ pub mod desktop_notify;
 pub mod download;
 pub mod frost;
 pub mod game;
+pub mod migrate;
 pub mod receos;
 pub mod receos_api;
 pub mod receos_social;
@@ -27,6 +28,10 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Before anything opens the settings or the web view's folders: they are
+    // named after the app identifier, which changed from com.radium.launcher.
+    migrate::migrate_app_identifier();
+
     tauri::Builder::default()
         // Enforce a single running instance. Must be registered before any other
         // plugin. When the user launches the launcher again while one is already

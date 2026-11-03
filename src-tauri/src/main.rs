@@ -6,8 +6,8 @@ fn main() {
     // Steam stops showing Rec Room as soon as it is done (see stella_api).
     // Checked first: that copy must not start the app, or meet its
     // single-instance guard.
-    if std::env::args().nth(1).as_deref() == Some(radium_launcher_lib::stella_api::TICKET_HELPER_ARG) {
-        std::process::exit(radium_launcher_lib::stella_api::steam_ticket_helper());
+    if std::env::args().nth(1).as_deref() == Some(rec_eos_launcher_lib::stella_api::TICKET_HELPER_ARG) {
+        std::process::exit(rec_eos_launcher_lib::stella_api::steam_ticket_helper());
     }
-    radium_launcher_lib::run()
+    rec_eos_launcher_lib::run()
 }
