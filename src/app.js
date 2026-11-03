@@ -174,7 +174,7 @@ const NETWORKS = {
     hasFeed: false,
     hasPresence: false,
     hasPhotoFeed: false,
-    hasInventions: false,
+    hasInventions: true,
     // Before a search, players online now, then the most recently seen.
     hasPeopleBrowse: true,
     needsConfiguredDownloadUrl: false,
@@ -1404,14 +1404,14 @@ function renderProfileCheers(cheers) {
   if (!panel || !list) return;
   const counts = CHEER_KINDS.map(([key, label]) => [label, Math.max(0, Number(cheers?.[key]) || 0)]);
   const total = counts.reduce((sum, [, n]) => sum + n, 0);
-  panel.hidden = !cheers || total === 0;
+  panel.hidden = !cheers || (total === 0 && activeNetwork !== 'receos');
   if (panel.hidden) {
     list.replaceChildren();
     return;
   }
   const totalEl = $('peopleDetailCheersTotal');
   if (totalEl) totalEl.textContent = formatCount(total);
-  const most = Math.max(...counts.map(([, n]) => n));
+  const most = Math.max(1, ...counts.map(([, n]) => n));
   list.replaceChildren(...counts.map(([label, n]) => {
     const row = document.createElement('div');
     row.className = 'profile-cheer';

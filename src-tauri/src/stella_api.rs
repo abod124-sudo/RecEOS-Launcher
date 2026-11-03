@@ -2845,6 +2845,10 @@ pub async fn user_details(account_id: i64) -> Value {
 
 /// One invention in the shape the profile's grid draws.
 fn invention_row(i: &Value) -> Value {
+    profile_invention_row(i, img_url(str_at(i, "ImageName"), 1024))
+}
+
+pub(crate) fn profile_invention_row(i: &Value, thumb_url: String) -> Value {
     let image = str_at(i, "ImageName");
     let flag = |key: &str| i.get(key).and_then(Value::as_bool).unwrap_or(false);
     // The game's placeholder, which is no description at all.
@@ -2857,7 +2861,7 @@ fn invention_row(i: &Value) -> Value {
         "Name": str_at(i, "Name"),
         "Description": description,
         "ImageName": image,
-        "ThumbUrl": img_url(image, 1024),
+        "ThumbUrl": thumb_url,
         "Downloads": i64_at(i, "NumDownloads"),
         "CheerCount": i64_at(i, "CheerCount"),
         "Price": i64_at(i, "Price"),

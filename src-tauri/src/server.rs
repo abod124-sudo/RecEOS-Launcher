@@ -442,9 +442,7 @@ pub async fn fetch_user_photos(args: Value) -> Value {
     }
 }
 
-/// Fetch the inventions a specific user has published. Only Stella publishes
-/// them; elsewhere the answer is an empty, complete list, and the page doesn't
-/// offer the tab there anyway.
+/// Fetch the inventions a specific user has published.
 #[tauri::command]
 pub async fn fetch_user_inventions(args: Value) -> Value {
     let user_id = match args.get("userId") {
@@ -457,7 +455,8 @@ pub async fn fetch_user_inventions(args: Value) -> Value {
 
     match network_of(&args) {
         Network::Stella => crate::stella_api::fetch_user_inventions(&user_id, skip, take).await,
-        Network::Radium | Network::Vanilla | Network::RecEos => json!({
+        Network::RecEos => crate::receos_api::fetch_user_inventions(&user_id, skip, take).await,
+        Network::Radium | Network::Vanilla => json!({
             "success": true,
             "data": { "Results": [], "TotalResults": 0, "TotalKnown": true }
         }),

@@ -138,7 +138,7 @@ fn room_row(r: &Value) -> Value {
         "CreatorPlayerId": creator,
         "CreatorAvatarUrl": image_url(s(r, "profile_image")),
         "CheerCount": n(r, "cheers"),
-        "FavoriteCount": Value::Null,
+        "FavoriteCount": r["favorites"].as_i64(),
         "VisitCount": n(r, "visits"),
         "ActivePlayerCount": 0,
         "MaxPlayers": r.get("capacity").cloned().unwrap_or(Value::Null),
@@ -257,7 +257,7 @@ pub async fn room_web_details(name: &str) -> Value {
         Ok(Some(r)) => json!({
             "success": true,
             "cheers": n(&r, "cheers").to_string(),
-            "favorites": "",
+            "favorites": r["favorites"].as_i64().map(|count| count.to_string()).unwrap_or_default(),
             "visits": n(&r, "visits").to_string(),
             "description": s(&r, "description"),
             "creatorAvatar": image_url(s(&r, "profile_image")),
@@ -329,6 +329,7 @@ pub async fn user_web_details(username: &str) -> Value {
                 "accountId": a.get("accountId").cloned().unwrap_or(Value::Null),
                 "userName": s(a, "username"),
                 "displayName": s(a, "displayName"),
+                "cheers": body.get("cheers").filter(|cheers| cheers.is_object()),
                 "friends": n(st, "friends").to_string(),
                 "subscribers": n(st, "subscribers").to_string(),
                 "visits": "",
@@ -347,6 +348,23 @@ pub async fn user_web_details(username: &str) -> Value {
                 "isDeveloper": roles.iter().any(|r| r == "developer"),
                 "isModerator": roles.iter().any(|r| r == "moderator"),
             })
+        }
+        Err(e) => json!({ "success": false, "error": e }),
+    }
+}
+
+pub async fn fetch_user_inventions(username: &str, skip: i64, take: i64) -> Value {
+    let username = username.trim();
+    if !valid_username(username) {
+        return json!({ "success": false, "error": "Invalid player." });
+    }
+    let params = format!("player={}", enc(&username.to_lowercase()));
+    match paged("/web/community/inventions", &params, skip, take, 24).await {
+        Ok((rows, more)) => {
+            let rows = rows.iter().map(|i| {
+                crate::stella_api::profile_invention_row(i, image_url(s(i, "ImageName")))
+            }).collect();
+            envelope(rows, skip, more)
         }
         Err(e) => json!({ "success": false, "error": e }),
     }
