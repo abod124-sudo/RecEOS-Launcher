@@ -181,6 +181,7 @@ pub fn run() {
             receos_social::receos_set_friend_favorite,
             receos_social::receos_accept_friend_request,
             receos_social::receos_send_friend_request,
+            receos_social::receos_request_join,
             receos_social::receos_remove_friend,
             receos_social::receos_notifications,
             receos_social::receos_updates,

@@ -241,6 +241,19 @@ pub async fn receos_send_friend_request(app: AppHandle, id: i64) -> Result<(), S
 }
 
 #[tauri::command]
+pub async fn receos_request_join(app: AppHandle, id: i64) -> Result<(), String> {
+    if id <= 0 {
+        return Err("Which player?".into());
+    }
+    let result = call(&app, reqwest::Method::POST, &format!("/launcher/request-to-join?id={id}"), None).await?;
+    if result["success"].as_bool() == Some(true) {
+        Ok(())
+    } else {
+        Err("Rec EOS didn't confirm the join request.".into())
+    }
+}
+
+#[tauri::command]
 pub async fn receos_remove_friend(app: AppHandle, id: i64) -> Result<(), String> {
     relationship(&app, "removefriend", id).await
 }

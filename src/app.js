@@ -496,6 +496,7 @@ function withoutBackdrop(cfg) {
     receosSetFriendFavorite: (id, on) => invoke('receos_set_friend_favorite', { id: Number(id), on: !!on }),
     receosAcceptFriendRequest: (id) => invoke('receos_accept_friend_request', { id: Number(id) }),
     receosSendFriendRequest: (id) => invoke('receos_send_friend_request', { id: Number(id) }),
+    receosRequestJoin: (id) => invoke('receos_request_join', { id: Number(id) }),
     receosNotifications: () => invoke('receos_notifications'),
     receosUpdates: (afterMessageId, afterChatMessageId) => invoke('receos_updates', { afterMessageId: afterMessageId ?? null, afterChatMessageId: afterChatMessageId ?? null }),
     receosChatThreads: () => invoke('receos_chat_threads'),
@@ -6202,7 +6203,7 @@ function playFromTray() {
 function joinFromTray(id) {
   const friend = stellaFriendsById.get(Number(id));
   if (!stellaLike() || !friend) return;
-  if ((friend.private && activeNetwork === 'stella') || isGameRunning || isGameLaunching || !isInstalled || stellaUpdateNeeded()) {
+  if (friend.private || isGameRunning || isGameLaunching || !isInstalled || stellaUpdateNeeded()) {
     window.radium?.showLauncher();
   } else {
     pendingJoin = null;
@@ -7867,7 +7868,7 @@ function buildFriendCard(f, size, withHandle, starToggle = false) {
     join.className = 'modal-btn modal-btn-primary friend-join';
     join.textContent = 'JOIN';
     if (activeNetwork === 'receos') {
-      join.setAttribute('aria-label', `Start Rec EOS and join ${name}`);
+      join.setAttribute('aria-label', f.private ? `Ask ${name} to let you into their private room` : `Start Rec EOS and join ${name}`);
       join.addEventListener('click', () => joinReceosFriend(f));
     } else {
       join.setAttribute('aria-label', f.private && !stellaInvitedBy(f.id) ? `Ask ${name} to let you into their private room` : `Start Stella and join ${name}`);
@@ -8325,13 +8326,31 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ── Rec EOS JOIN ─────────────────────────────────────────────────────────
-// The game itself does the joining (`+join:<account id>`, the same launch
-// argument Stella's game takes); the mod lets friends into private rooms too.
+// Public rooms and accepted invites launch with `+join:<account id>`.
+// Private rooms ask first, and the reply arrives as a game invite.
 
-function joinReceosFriend(friend) {
+const receosJoinRequests = new Set();
+
+async function joinReceosFriend(friend) {
   if (activeNetwork !== 'receos' || !friend?.id) return;
+  const id = Number(friend.id);
   const name = friend.displayName || friend.userName || 'your friend';
-  launchStellaInto({ id: Number(friend.id), name }, name);
+  if (!friend.private) {
+    launchStellaInto({ id, name }, name);
+    return;
+  }
+  if (receosJoinRequests.has(id)) return;
+  receosJoinRequests.add(id);
+  try {
+    await window.radium.receosRequestJoin(id);
+    addLog(`Sent ${name} a join request.`, 'ok', 'game');
+    toast(`Sent ${name} a join request. Check Notifications for their invite.`, 'ok', 6000);
+  } catch (e) {
+    receosSignedOutBy(e);
+    toast(`Couldn't send ${name} a join request. ${e}`, 'error', 6000);
+  } finally {
+    receosJoinRequests.delete(id);
+  }
 }
 
 async function joinFromReceosInvite(id, name = null) {
