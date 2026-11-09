@@ -1555,13 +1555,13 @@ mod tests {
         assert!(!stream_is_faster(&unknown, Duration::from_secs(10)));
     }
 
-    /// The Rec EOS client on MediaFire: losing BepInEx (the user's test,
+    /// The Rec EOS client on R2: losing BepInEx (the user's test,
     /// 2026-10-27) is repaired as one stream, not 300 slow range requests.
     /// `RECEOS_CLIENT_DIR=<installed client> cargo test --lib -- --ignored receos_loader_repairs`
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "reads part of the Rec EOS client from MediaFire"]
-    async fn receos_loader_repairs_from_mediafire_as_a_stream() {
-        let url = crate::receos::resolve_client_url().await.unwrap();
+    #[ignore = "reads part of the Rec EOS client from R2"]
+    async fn receos_loader_repairs_from_r2_as_a_stream() {
+        let url = crate::receos::CLIENT_URL.to_string();
         let http = range_client().unwrap();
         let asked = std::time::Instant::now();
         let remote = probe_ranges(&http, &url, crate::receos::USER_AGENT).await.unwrap().expect("ranges");

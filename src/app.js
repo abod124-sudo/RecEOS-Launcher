@@ -3856,7 +3856,7 @@ async function runClientDownload({ resuming = false } = {}) {
       vanilla: "Downloading Vanilla from Vanilla's file server (cdn.vanillarec.net, about 7.7 GB)...",
       // Sent without a length, so the bar can't show a percentage.
       stella: "Starting download from Stella (about 4.7 GB; Stella's server doesn't send the size)...",
-      receos: 'Starting download of the Rec EOS client from MediaFire (about 3.1 GB)...',
+      receos: 'Starting download of the Rec EOS client from cdn.rec-eos.com (about 3.1 GB)...',
     }[activeNetwork] || 'Starting download...', 'info', 'install');
     toast('Download started!', 'info', 2500);
   }

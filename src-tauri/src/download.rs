@@ -104,19 +104,17 @@ fn zip_stem(network: Network) -> &'static str {
 pub(crate) fn download_user_agent(network: Network) -> &'static str {
     match network {
         Network::Stella => crate::stella::USER_AGENT,
-        // MediaFire's Cloudflare turns away requests that claim to be a
-        // browser but don't look like one; the launcher's own name is let in.
         Network::RecEos => crate::receos::USER_AGENT,
         Network::Radium | Network::Vanilla => BROWSER_UA,
     }
 }
 
 /// What a partial download is matched to when it is resumed: the URL it came
-/// from, or for Rec EOS its MediaFire page, whose download links change on
-/// every visit (the pinned hash still decides whether the result is kept).
+/// from, or for Rec EOS the pinned archive hash. A host change can then resume
+/// the same build, while a different build can never reuse old partial bytes.
 fn resume_key(network: Network, download_url: &str) -> String {
     match network {
-        Network::RecEos => format!("receos:{}", crate::receos::CLIENT_PAGE),
+        Network::RecEos => format!("receos:{}", crate::receos::CLIENT_SHA256),
         _ => download_url.to_string(),
     }
 }
@@ -495,10 +493,8 @@ async fn resolve_download_info(
         return Ok((String::new(), crate::stella::CLIENT_URL.to_string()));
     }
     if network == Network::RecEos {
-        // MediaFire hands out a short-lived link from its file page, so it is
-        // looked up for every download. The zip is pinned by hash below.
-        let url = crate::receos::resolve_client_url().await?;
-        return Ok((crate::receos::CLIENT_VERSION.to_string(), url));
+        // R2 serves an immutable archive directly; the zip is pinned by hash below.
+        return Ok((crate::receos::CLIENT_VERSION.to_string(), crate::receos::CLIENT_URL.to_string()));
     }
     if network == Network::Vanilla {
         // Vanilla has no published build yet — vanillarec.net lists every
@@ -3177,6 +3173,22 @@ mod resume_tests {
     use super::*;
     use reqwest::header::{HeaderMap, HeaderValue, ACCEPT_RANGES};
     use reqwest::StatusCode;
+
+    #[test]
+    fn receos_resume_identity_follows_the_build_across_hosts() {
+        assert_eq!(
+            resume_key(Network::RecEos, crate::receos::CLIENT_URL),
+            resume_key(Network::RecEos, "https://old-host.example/client.zip")
+        );
+        assert_eq!(
+            resume_key(Network::RecEos, crate::receos::CLIENT_URL),
+            format!("receos:{}", crate::receos::CLIENT_SHA256)
+        );
+        assert_ne!(
+            resume_key(Network::Radium, "https://host.example/old.zip"),
+            resume_key(Network::Radium, "https://host.example/new.zip")
+        );
+    }
 
     fn headers(accept_ranges: Option<&str>) -> HeaderMap {
         let mut h = HeaderMap::new();

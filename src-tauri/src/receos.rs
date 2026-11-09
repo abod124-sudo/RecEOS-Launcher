@@ -4,12 +4,12 @@
 //! RecEOS mod (`BepInEx/plugins/RecEOS.dll`), which moves the game onto Epic
 //! Online Services and the Rec EOS servers. The install comes in two parts:
 //!
-//! * **The base client**, a zip on MediaFire ([`CLIENT_PAGE`]): the game, the
+//! * **The base client**, a zip on R2 ([`CLIENT_URL`]): the game, the
 //!   BepInEx loader (Doorstop's `version.dll`, its .NET runtime, `BepInEx/core`
 //!   and the generated interop assemblies) and a clean `UserData/RecEOS.json`,
-//!   but none of the mod's own files. MediaFire hands out a short-lived direct
-//!   link from its file page, so the link is looked up for every download, and
-//!   the zip is only accepted if it hashes to [`CLIENT_SHA256`].
+//!   but none of the mod's own files. The versioned HTTPS URL is served directly
+//!   from the Rec EOS R2 bucket, and the zip is only accepted if it hashes to
+//!   [`CLIENT_SHA256`].
 //! * **The mod**, from the Rec EOS update server: the same signed release the
 //!   mod's in-game updater installs (`GET /v1/version?platform=pc`, files from
 //!   `/updates/{sha256}`). The release is signed with the Rec EOS release key
@@ -37,9 +37,11 @@ use crate::download::sha256_of;
 /// without signing in.
 pub const API_ROOT: &str = "https://api.rec-eos.com";
 
-/// The MediaFire page of the base client zip (in the "Rec EOS [PC BUILD]"
-/// folder). Its SHA-256 there matches [`CLIENT_SHA256`].
-pub const CLIENT_PAGE: &str = "https://www.mediafire.com/file/wspiep9n77gbb2e/RecEOS-Base-20220211.zip/file";
+/// Versioned base client archive, served directly from the Rec EOS R2 bucket.
+/// Keep this URL immutable; a replacement build needs a new URL and hash.
+/// The extensionless key avoids ZIP cache eligibility stripping Range headers
+/// on cold requests for this archive, which exceeds Cloudflare's cache size cap.
+pub const CLIENT_URL: &str = "https://cdn.rec-eos.com/downloads/pc/RecEOS-Base-20220211";
 
 /// SHA-256 of the base client zip (`RecEOS-Base-20220211.zip`), lowercase
 /// hex. A download that hashes to anything else is deleted, not installed.
@@ -80,113 +82,6 @@ fn http() -> Result<reqwest::Client, String> {
         .timeout(Duration::from_secs(120))
         .build()
         .map_err(|e| e.to_string())
-}
-
-// ─── The base client on MediaFire ───────────────────────────────────────────
-
-/// Whether `url` is a MediaFire download server (`https://download1234.mediafire.com/...`).
-fn is_mediafire_download(url: &str) -> bool {
-    let Ok(parsed) = reqwest::Url::parse(url) else { return false };
-    let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
-    parsed.scheme() == "https"
-        && parsed.username().is_empty()
-        && parsed.port().is_none()
-        && host.ends_with(".mediafire.com")
-        && host.starts_with("download")
-}
-
-/// The direct download link on a MediaFire file page: the `downloadButton`
-/// anchor's `href`, or its base64 `data-scrambled-url` when the page hides it.
-pub(crate) fn mediafire_direct_link(html: &str) -> Option<String> {
-    use base64::Engine as _;
-    let anchor = regex::Regex::new(r#"(?is)<a\b[^>]*\bid\s*=\s*["']downloadButton["'][^>]*>"#).ok()?;
-    let tag = anchor.find(html)?.as_str();
-    let attr = |name: &str| {
-        regex::Regex::new(&format!(r#"(?is)\b{name}\s*=\s*["']([^"']*)["']"#))
-            .ok()?
-            .captures(tag)
-            .map(|c| c[1].replace("&amp;", "&"))
-    };
-    let mut candidates = Vec::new();
-    if let Some(href) = attr("href") {
-        candidates.push(href);
-    }
-    if let Some(scrambled) = attr("data-scrambled-url") {
-        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(scrambled.trim()) {
-            if let Ok(s) = String::from_utf8(bytes) {
-                candidates.push(s);
-            }
-        }
-    }
-    candidates.into_iter().find(|u| is_mediafire_download(u))
-}
-
-/// The base client's current direct link, looked up from [`CLIENT_PAGE`].
-pub async fn resolve_client_url() -> Result<String, String> {
-    if CLIENT_PAGE.is_empty() {
-        return Err("Rec EOS has no client download yet. Ask in the Rec EOS Discord.".into());
-    }
-    // MediaFire's Cloudflare answers reqwest's TLS with a browser challenge
-    // ("Just a moment...") but lets Windows' own curl through, so the page
-    // is fetched with that first. The file itself comes over reqwest as usual
-    // (the download servers don't challenge it).
-    #[cfg(windows)]
-    let why = match tokio::task::spawn_blocking(|| page_with_system_curl(CLIENT_PAGE)).await {
-        Ok(Ok(html)) => match mediafire_direct_link(&html) {
-            Some(link) => return Ok(link),
-            None => "MediaFire's page has no download link. The file may have been taken down.".to_string(),
-        },
-        Ok(Err(e)) => e,
-        Err(e) => e.to_string(),
-    };
-    #[cfg(not(windows))]
-    let why = String::new();
-    let fallback = async {
-        let html = http()?
-            .get(CLIENT_PAGE)
-            .header("User-Agent", crate::download::download_user_agent(Network::RecEos))
-            .send()
-            .await
-            .map_err(|e| format!("Couldn't reach MediaFire: {e}"))?
-            .error_for_status()
-            .map_err(|e| format!("MediaFire answered {e}"))?
-            .text()
-            .await
-            .map_err(|e| format!("Couldn't read MediaFire's page: {e}"))?;
-        mediafire_direct_link(&html)
-            .ok_or_else(|| "MediaFire's page has no download link. The file may have been taken down.".to_string())
-    };
-    fallback.await.map_err(|e| if why.is_empty() { e } else { why })
-}
-
-/// MediaFire's page, through `%SystemRoot%System32curl.exe` (in Windows
-/// since 10 1803): by its full path, never whatever `curl` is on PATH, with no
-/// window, https only (redirects too), a time limit and a size cap.
-#[cfg(windows)]
-fn page_with_system_curl(url: &str) -> Result<String, String> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let root = std::env::var_os("SystemRoot").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:Windows"));
-    let curl = root.join("System32").join("curl.exe");
-    if !curl.is_file() {
-        return Err("This copy of Windows has no curl.exe to reach MediaFire with.".into());
-    }
-    let out = std::process::Command::new(&curl)
-        .args([
-            "--silent", "--show-error", "--fail", "--location",
-            "--max-time", "30", "--max-filesize", "8000000",
-            "--proto", "=https", "--proto-redir", "=https",
-            "--user-agent", USER_AGENT,
-            "--", url,
-        ])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .map_err(|e| format!("Couldn't reach MediaFire: {e}"))?;
-    if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        return Err(format!("Couldn't reach MediaFire: {}", if err.is_empty() { "no answer".into() } else { err }));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 // ─── The signed mod release ─────────────────────────────────────────────────
@@ -664,34 +559,6 @@ mod tests {
     }
 
     #[test]
-    fn the_mediafire_link_is_found() {
-        let page = r#"<a class="input popsok" aria-label="Download file"
-            href="https://download2391.mediafire.com/abc/def/RecEOS-Base-20220211.zip" id="downloadButton" rel="nofollow">"#;
-        assert_eq!(
-            mediafire_direct_link(page).as_deref(),
-            Some("https://download2391.mediafire.com/abc/def/RecEOS-Base-20220211.zip")
-        );
-
-        use base64::Engine as _;
-        let scrambled = base64::engine::general_purpose::STANDARD
-            .encode("https://download1.mediafire.com/x/y/RecEOS-Base-20220211.zip");
-        let page = format!(r#"<a id="downloadButton" href="javascript:void(0)" data-scrambled-url="{scrambled}">"#);
-        assert_eq!(
-            mediafire_direct_link(&page).as_deref(),
-            Some("https://download1.mediafire.com/x/y/RecEOS-Base-20220211.zip")
-        );
-
-        for bad in [
-            r#"<a id="downloadButton" href="https://evil.example/x.zip">"#,
-            r#"<a id="downloadButton" href="http://download1.mediafire.com/x.zip">"#,
-            r#"<a id="downloadButton" href="https://download1.mediafire.com.evil.example/x.zip">"#,
-            r#"<a id="other" href="https://download1.mediafire.com/x.zip">"#,
-        ] {
-            assert_eq!(mediafire_direct_link(bad), None, "{bad}");
-        }
-    }
-
-    #[test]
     fn the_client_pin_is_well_formed_once_set() {
         if CLIENT_SHA256 != "PENDING" {
             assert_eq!(CLIENT_SHA256.len(), 64);
@@ -699,18 +566,18 @@ mod tests {
         }
     }
 
-    /// MediaFire's page gives a direct link (network):
-    /// `cargo test -- --ignored the_mediafire_page`.
+    /// The R2 client supports byte ranges for downloading, pausing and repairs.
+    /// `cargo test -- --ignored the_r2_client_supports_ranges`.
     #[tokio::test]
     #[ignore = "network"]
-    async fn the_mediafire_page_resolves() {
-        let url = resolve_client_url().await.unwrap();
-        assert!(url.ends_with("/RecEOS-Base-20220211.zip"), "{url}");
+    async fn the_r2_client_supports_ranges() {
+        let url = CLIENT_URL;
+        assert!(url.ends_with("/RecEOS-Base-20220211"), "{url}");
         // The file itself, as the download asks for it (no compression, a
         // byte range for resuming).
         let http = reqwest::Client::builder().https_only(true).no_gzip().no_brotli().build().unwrap();
         let res = http
-            .get(&url)
+            .get(url)
             .header("User-Agent", crate::download::download_user_agent(Network::RecEos))
             .header(reqwest::header::RANGE, "bytes=0-3")
             .send()
