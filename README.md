@@ -6,7 +6,7 @@ An **unofficial** launcher for Rec Room revival servers.
 
 | Server | Site |
 | :--- | :--- |
-| **Rec EOS** (default) | [rec-eos.com](https://rec-eos.com/) |
+| **Rec EOS**  | [rec-eos.com](https://rec-eos.com/) |
 | **Radium** | [radie.app](https://www.radie.app/) |
 | **Vanilla** | [vanillarec.net](https://vanillarec.net/) |
 | **Stella** | [Discord](https://discord.com/invite/stella-rr) |
