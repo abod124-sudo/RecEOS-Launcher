@@ -8,6 +8,7 @@ permissions:
 jobs:
   windows:
     runs-on: windows-2022
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -39,6 +40,7 @@ jobs:
   linux:
     needs: windows
     runs-on: ubuntu-22.04
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -52,9 +54,15 @@ jobs:
         with:
           workspaces: src-tauri -> target
       - name: Install native dependencies
+        timeout-minutes: 10
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf libfuse2 libnotify-bin xdg-utils xvfb gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+          # The hosted image's Azure mirror can fail DNS once per package.
+          # Use the official Ubuntu archive while keeping apt signature checks.
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            printf '%s\n' 'https://archive.ubuntu.com/ubuntu' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          fi
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o APT::Update::Error-Mode=any update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf libfuse2 libnotify-bin xdg-utils xvfb gstreamer1.0-plugins-base gstreamer1.0-plugins-good
       - run: npm ci
       - uses: actions/download-artifact@v4
         with:
@@ -82,6 +90,7 @@ jobs:
   linux-desktop:
     needs: linux
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -90,9 +99,10 @@ jobs:
       image: ${{ matrix.image }}
     steps:
       - name: Install desktop test dependencies
+        timeout-minutes: 10
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates python3 python3-dbus python3-gi libwebkit2gtk-4.1-0 libgtk-3-0 libayatana-appindicator3-1 libnotify-bin xdg-utils xvfb xauth dbus-x11 dunst libssl-dev webkit2gtk-driver weston xwayland libgl1-mesa-dri libegl1 libgles2 desktop-file-utils gstreamer1.0-plugins-base gstreamer1.0-plugins-good pulseaudio
+          apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o APT::Update::Error-Mode=any update
+          DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends git ca-certificates python3 python3-dbus python3-gi libwebkit2gtk-4.1-0 libgtk-3-0 libayatana-appindicator3-1 libnotify-bin xdg-utils xvfb xauth dbus-x11 dunst libssl-dev webkit2gtk-driver weston xwayland libgl1-mesa-dri libegl1 libgles2 desktop-file-utils gstreamer1.0-plugins-base gstreamer1.0-plugins-good pulseaudio
           if ! id 1000 >/dev/null 2>&1; then useradd --create-home --uid 1000 validation; fi
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4

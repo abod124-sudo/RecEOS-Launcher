@@ -13,6 +13,11 @@ release from Steam's Tools library. Install the Steam Linux Runtime required by
 that Proton release as well; the launcher's runtime check names a missing app ID.
 Flatpak Steam, ARM64, and Steam Deck Gaming Mode are outside this first release.
 
+Install GPU drivers meeting the selected Proton version's
+[DXVK requirements](https://github.com/doitsujin/dxvk/wiki/Driver-support).
+Runtime readiness confirms the Steam, Proton and runtime files; graphics and
+game authentication still need their own tests.
+
 Install the `.deb` with `sudo apt install ./Rec*.deb`. For an AppImage, make it
 executable and run it. AppImage users need their distribution's WebKitGTK 4.1,
 tray support, `xdg-utils`, and `libnotify-bin` (`notify-send`). On Wayland,
@@ -393,10 +398,50 @@ label in the UI, artifacts and documentation until the game matrix passes.
   AppImage-to-Proton patch loading/Stop, and the native Vanilla handoff through
   Proton 10/Steam Linux Runtime 3 also passed again with these packages.
 
-The remaining gameplay gates need usable rendering and network accounts. The
-software-rendered container results above do not establish screen-mode gameplay
-on a supported Linux GPU desktop. Keep Linux gameplay and VR labeled pending/
-experimental until those gates are observed passing.
+### Further graphics and hosted checks on 2026-11-11
+
+- The tested source was pushed to `abod/linux-support` at `b581cdf`, leaving
+  `main` unchanged. Its
+  [first hosted Desktop builds run](https://github.com/abod124-sudo/RecEOS-Launcher/actions/runs/43033335459)
+  passed the Windows suite (284 regular tests), the helper's three unit and six
+  native process tests, and the Windows installer build. Linux dependency
+  installation was stopped after repeated DNS failures for the hosted image's
+  Azure package mirror. CI now uses the official Ubuntu archive with apt
+  signature verification, bounded retries and step timeouts. Follow-up Linux
+  jobs are tracked in the
+  [branch's workflow runs](https://github.com/abod124-sudo/RecEOS-Launcher/actions/workflows/desktop.yml?query=branch%3Aabod%2Flinux-support);
+  the Windows results alone do not certify Linux packages.
+- The WSL test desktop exposes software Vulkan 1.3 through llvmpipe. Rec EOS's
+  Windows build does not include Unity's OpenGL renderer, so `-force-glcore`
+  cannot work around missing graphics support. Proton 10's bundled DXVK 2.6.2
+  creates its Direct3D device, but crashes on Xvfb's reported 0 Hz refresh rate.
+  A nested Weston/XWayland display reports about 60 Hz and removes that crash.
+- With Proton 10, its matching Steam Linux Runtime 3, and that display, the
+  installed native launcher verified and started the actual Rec EOS client,
+  which rendered its account-selection and sign-in screens. The saved login
+  failed; the tester does not have a Rec EOS account/password. Steam sign-in
+  does not supply a Rec EOS account. Room and friend gameplay remain untested.
+  Stop closed the game and the temporary runtime selection was restored.
+- The same normal-refresh display and Proton 10 also render Stella's actual
+  welcome screen after the exact accepted patch loads. Account sign-in and room
+  gameplay remain unverified. The hosted Windows helper artifact (SHA-256
+  `5daa7067cfe4ee903f3307a87f628da3bd45ac19779e01c5e5e1d2f210963a60`)
+  separately passed all five real Proton fixture cases: valid patch, invalid
+  patch, an unrelated DLL with the same basename, game exit during loading,
+  and a legacy batch launcher containing spaces. These tests do not use a game
+  account or accept a different upstream Stella patch.
+- Vanilla was also tested with the guide's WebView2 146 on the corrected
+  display. Proton 10 still crashed in Wine's COM handling. Valve Proton
+  Experimental (`experimental-11.0-20261105c`) and Steam Linux Runtime 4 were
+  then tested in a fresh prefix: the approved, Microsoft-signed WebView2
+  installer completed, but the official launcher again crashed in `ole32`.
+  No WebView sandbox, official authentication or anti-cheat checks were disabled.
+
+The remaining gameplay gates require successful network authentication and
+room gameplay, with usable rendering for each client. The software-rendered
+container results above do not establish gameplay on a supported physical
+Linux GPU desktop. Keep Linux gameplay and VR labeled pending/experimental
+until those gates are observed passing.
 
 ### Reproducing the account-free desktop checks
 
