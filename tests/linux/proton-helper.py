@@ -101,7 +101,7 @@ def main():
         ('valid patch', 'module.dll', [], True),
         ('invalid patch', None, [], False),
         ('unrelated same basename', None, ['preload-other'], False),
-        ('exit during load', 'slow.dll', ['exit-during-load'], False),
+        ('exit during load', 'exit.dll', ['exit-during-load'], False),
     ):
         case = root / name
         (case / 'verified').mkdir(parents=True)
@@ -132,6 +132,8 @@ def main():
                 assert output_path.exists(), f'{name}: helper did not report a result; inspect {case / "runtime.log"}'
                 reply = json.loads(output_path.read_bytes())
                 assert reply.get('version') == 1 and reply.get('success') is expected, reply
+                if name == 'exit during load':
+                    assert (case / 'exit-during-load.started').read_bytes() == b'terminating in DllMain'
                 alive = bool(owned_games(compat / 'pfx', game))
                 assert alive is expected, f'{name}: unexpected owned game state {alive}'
                 result = {'case': name, 'passed': True, 'patchLoaded': expected,

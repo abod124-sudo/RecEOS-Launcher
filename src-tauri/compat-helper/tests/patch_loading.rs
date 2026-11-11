@@ -34,8 +34,8 @@ fn fixtures() -> &'static Path {
                 ("module.rs", "module.dll", vec!["--crate-type", "cdylib"]),
                 (
                     "module.rs",
-                    "slow.dll",
-                    vec!["--crate-type", "cdylib", "--cfg", "slow_init"],
+                    "exit.dll",
+                    vec!["--crate-type", "cdylib", "--cfg", "exit_during_load"],
                 ),
                 ("game.rs", "game.exe", vec![]),
             ] {
@@ -244,7 +244,7 @@ fn a_different_loaded_dll_with_the_same_name_does_not_count_as_the_patch() {
 fn process_exit_during_loading_cannot_be_reported_as_a_loaded_patch() {
     let case = Case::new();
     fs::copy(
-        fixtures().join("slow.dll"),
+        fixtures().join("exit.dll"),
         case.root.join("verified/patch.dll"),
     )
     .unwrap();
@@ -254,6 +254,7 @@ fn process_exit_during_loading_cannot_be_reported_as_a_loaded_patch() {
         "Process exit was accepted as a loaded patch: {reply}"
     );
     assert!(!case.running());
+    assert_eq!(fs::read(case.root.join("exit-during-load.started")).unwrap(), b"terminating in DllMain");
 }
 
 #[test]
@@ -262,7 +263,7 @@ fn file_protocol_works_without_standard_streams_and_preserves_all_load_checks() 
         (Some("module.dll"), vec![], true),
         (None, vec![], false),
         (None, vec!["preload-other"], false),
-        (Some("slow.dll"), vec!["exit-during-load"], false),
+        (Some("exit.dll"), vec!["exit-during-load"], false),
     ] {
         let case = Case::new();
         fs::copy(fixtures().join("module.dll"), case.root.join("other/patch.dll")).unwrap();
@@ -270,9 +271,12 @@ fn file_protocol_works_without_standard_streams_and_preserves_all_load_checks() 
         if let Some(patch) = patch { fs::copy(fixtures().join(patch), target).unwrap(); }
         else { fs::write(target, b"This is not a PE library").unwrap(); }
         let (success, reply) = case.launch_files(&args);
-        assert_eq!(success, expected, "{reply}");
-        assert_eq!(reply["success"], expected, "{reply}");
-        assert_eq!(case.running(), expected, "{reply}");
+        assert_eq!(success, expected, "patch={patch:?}, args={args:?}: {reply}");
+        assert_eq!(reply["success"], expected, "patch={patch:?}, args={args:?}: {reply}");
+        assert_eq!(case.running(), expected, "patch={patch:?}, args={args:?}: {reply}");
+        if patch == Some("exit.dll") {
+            assert_eq!(fs::read(case.root.join("exit-during-load.started")).unwrap(), b"terminating in DllMain");
+        }
     }
 }
 

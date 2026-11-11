@@ -19,13 +19,6 @@ fn main() {
         load(&root.join("other/patch.dll"));
     }
     load(&root.join("GameAssembly.dll"));
-    if std::env::args().any(|arg| arg == "exit-during-load") {
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while !root.join("loading.started").is_file() && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        std::process::exit(42);
-    }
     loop {
         std::thread::sleep(Duration::from_secs(1));
     }

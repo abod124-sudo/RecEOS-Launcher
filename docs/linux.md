@@ -430,6 +430,12 @@ label in the UI, artifacts and documentation until the game matrix passes.
   patch, an unrelated DLL with the same basename, game exit during loading,
   and a legacy batch launcher containing spaces. These tests do not use a game
   account or accept a different upstream Stella patch.
+- A subsequent cached Windows CI run exposed a timing-dependent test fixture:
+  its DLL delay could finish before another thread requested process exit.
+  The private fixture now terminates its own process inside DLL initialization,
+  and both protocol tests assert that initialization was entered. The loader's
+  verification checks were not relaxed. All nine native helper tests, 20 repeated
+  file-protocol runs, and the five real Proton fixture cases then passed.
 - Vanilla was also tested with the guide's WebView2 146 on the corrected
   display. Proton 10 still crashed in Wine's COM handling. Valve Proton
   Experimental (`experimental-11.0-20261105c`) and Steam Linux Runtime 4 were
@@ -527,7 +533,7 @@ context creation still did not establish game compatibility.
 
 The real helper fixture checks can be repeated after running the Windows
 compat-helper integration tests (which build `game.exe`, `module.dll`, and
-`slow.dll` under `src-tauri/compat-helper/target/patch-loading-fixtures`). Save
+`exit.dll` under `src-tauri/compat-helper/target/patch-loading-fixtures`). Save
 the installed launcher's `get_linux_runtime_status` result as JSON, then run:
 
 ```bash

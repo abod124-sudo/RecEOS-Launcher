@@ -4,33 +4,27 @@ pub extern "system" fn fixture_marker() -> u32 {
     123
 }
 
-#[cfg(slow_init)]
+#[cfg(exit_during_load)]
 #[no_mangle]
 pub unsafe extern "system" fn DllMain(
-    module: *mut core::ffi::c_void,
+    _: *mut core::ffi::c_void,
     reason: u32,
     _: *mut core::ffi::c_void,
 ) -> i32 {
     #[link(name = "kernel32")]
     extern "system" {
-        fn Sleep(milliseconds: u32);
-        fn GetModuleFileNameW(module: *mut core::ffi::c_void, buffer: *mut u16, size: u32) -> u32;
+        fn GetCurrentProcess() -> *mut core::ffi::c_void;
+        fn TerminateProcess(process: *mut core::ffi::c_void, code: u32) -> i32;
     }
     if reason == 1 {
-        use std::os::windows::ffi::OsStringExt;
-        let mut buffer = vec![0u16; 32768];
-        let length = GetModuleFileNameW(module, buffer.as_mut_ptr(), buffer.len() as u32) as usize;
-        let path = std::path::PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length]));
-        std::fs::write(
-            path.parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .join("loading.started"),
-            b"ready",
-        )
-        .unwrap();
-        Sleep(3000);
+        // Exit before LoadLibraryW can return, independent of the scheduler.
+        // The former sleep/other-thread handshake could let initialization
+        // finish first on a busy runner, making success a valid result.
+        std::fs::write("exit-during-load.started", b"terminating in DllMain").unwrap();
+        TerminateProcess(GetCurrentProcess(), 42);
+        // Successful self-termination does not return. Still exit from this
+        // initialization call if an emulator unexpectedly returns an error.
+        std::process::abort();
     }
     1
 }
