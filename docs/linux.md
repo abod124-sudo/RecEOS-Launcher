@@ -446,6 +446,41 @@ label in the UI, artifacts and documentation until the game matrix passes.
   installer completed, but the official launcher again crashed in `ole32`.
   No WebView sandbox, official authentication or anti-cheat checks were disabled.
 
+### Completed hosted validation on 2026-11-11
+
+[GitHub Actions run 43047806861](https://github.com/abod124-sudo/RecEOS-Launcher/actions/runs/43047806861)
+passed all six jobs for source commit
+`709acc599a8e376fca4cb1ebfc9af4ea4e9c7aa6` on `abod/linux-support`:
+
+- Windows: 284 Rust tests passed and the unsigned test installer built.
+- Windows Proton helper: three unit tests and six integration tests passed.
+- Linux: 276 Rust tests passed; both packages built and passed layout, linking,
+  and frontend startup checks.
+- Ubuntu 22.04, Ubuntu 24.04 and Debian 12: both package formats passed their
+  desktop checks in X11 and Wayland sessions (through XWayland). All 12 downloaded
+  reports contain 16 passing checks, totaling 192; the three missing-tray-host
+  logs contain another six passing checks.
+
+The downloaded hosted package hashes are:
+
+| Package | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `Rec EOS Launcher_4.0.0_amd64.deb` | 7397320 | `d0a8a6dacafd9c1a4de22bc1f2588b388b851c1fb10f60847adbb5fca8fb312d` |
+| `Rec EOS Launcher_4.0.0_amd64.AppImage` | 96782840 | `c2a8731d36a9206937e50a11612825f269a5fc61d7bc06ef5097b897a03e4857` |
+
+Stella's latest observed screen offered to continue account creation. Completed
+account sign-in and room gameplay were not established. Its normal launch loaded
+the exact previously accepted upstream `Stella2024.dll`; the DLL and automatic
+trust pins were not changed. The Linux helper reproduces the existing Windows
+patch-loading path. A separate EAC runtime diagnostic did not establish an EAC
+dependency for Stella, and no EAC requirement was added to the launcher.
+
+Further Stella experiments were stopped. The test game closed through Stop,
+process discovery confirmed it had exited, and the original launcher
+configuration was restored. Steam sign-in, client files and Proton prefixes
+were retained. These hosted and interactive results do not change
+`linuxGameplayValidated=false` or satisfy the four-network gameplay release gate.
+
 The remaining gameplay gates require successful network authentication and
 room gameplay, with usable rendering for each client. The software-rendered
 container results above do not establish gameplay on a supported physical
