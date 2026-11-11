@@ -406,8 +406,11 @@ label in the UI, artifacts and documentation until the game matrix passes.
   passed the Windows suite (284 regular tests), the helper's three unit and six
   native process tests, and the Windows installer build. Linux dependency
   installation was stopped after repeated DNS failures for the hosted image's
-  Azure package mirror. CI now uses the official Ubuntu archive with apt
-  signature verification, bounded retries and step timeouts. Follow-up Linux
+  Azure package mirror. The runner also failed DNS resolution for Ubuntu's main
+  archive. CI now probes a fixed Ubuntu mirror list, retaining apt signature
+  verification, bounded retries and step timeouts. Local metadata probes reached
+  Ubuntu, kernel.org and Princeton mirrors. A separate Windows helper job lets
+  Linux checks begin while the Windows installer is packaged. Follow-up Linux
   jobs are tracked in the
   [branch's workflow runs](https://github.com/abod124-sudo/RecEOS-Launcher/actions/workflows/desktop.yml?query=branch%3Aabod%2Flinux-support);
   the Windows results alone do not certify Linux packages.
