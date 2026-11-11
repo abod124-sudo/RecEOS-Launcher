@@ -62,6 +62,29 @@ fn popup_window(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
 /// Queue cards for the pop-up and wake it.
 #[tauri::command]
 pub async fn desktop_notify(app: AppHandle, cards: Vec<Value>) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        // notify-send talks to the desktop's notification service over D-Bus;
+        // no focus changes or compositor-dependent popup coordinates.
+        let cfg = crate::config::current(&app);
+        if !cfg.notif_popups || crate::game::game_running(&app) { return Ok(()); }
+        for card in cards.into_iter().take(QUEUE_CAP) {
+            let title = card["app"].as_str().unwrap_or("Rec EOS Launcher");
+            let text: String = card["parts"].as_array().map(|parts| parts.iter()
+                .filter_map(|p| p["t"].as_str()).collect::<String>()).unwrap_or_default();
+            let text = text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+            let mut cmd = tokio::process::Command::from(crate::linux::system_command("notify-send"));
+            cmd.args(["--app-name=Rec EOS Launcher", "--icon=rec-eos-launcher", "--expire-time=8000"]);
+            if !cfg.notif_sound { cmd.arg("--hint=boolean:suppress-sound:true"); }
+            cmd.arg("--").arg(title.chars().take(128).collect::<String>()).arg(text.chars().take(2048).collect::<String>());
+            cmd.kill_on_drop(true);
+            let result = tokio::time::timeout(std::time::Duration::from_secs(10), cmd.output()).await
+                .map_err(|_| "The desktop notification service did not respond.".to_string())?
+                .map_err(|e| format!("Cannot send desktop notification. Install libnotify-bin: {e}"))?;
+            if !result.status.success() { return Err("The desktop notification service refused the notification.".into()); }
+        }
+        return Ok(());
+    }
     if cards.is_empty() {
         return Ok(());
     }

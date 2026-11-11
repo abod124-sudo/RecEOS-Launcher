@@ -38,32 +38,11 @@
   "bundle": {
     "active": true,
     "publisher": "abod124-sudo",
-    "targets": [
-      "nsis"
-    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.ico"
-    ],
-    "windows": {
-      "nsis": {
-        "installMode": "currentUser",
-        "displayLanguageSelector": false,
-        "template": "./installer.nsi",
-        "sidebarImage": "icons/nsis-sidebar.bmp",
-        "headerImage": "icons/nsis-header.bmp",
-        "installerIcon": "icons/icon.ico",
-        "uninstallerIcon": "icons/icon.ico"
-      },
-      "wix": {
-        "bannerPath": "icons/wix-banner.bmp",
-        "dialogImagePath": "icons/wix-dialog.bmp"
-      }
-    },
-    "resources": [
-      "steam_api64.dll"
     ]
   }
 }

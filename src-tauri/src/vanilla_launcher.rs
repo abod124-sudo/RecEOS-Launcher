@@ -118,7 +118,10 @@ const SETTINGS: [(&str, &str, &str); 5] = [
     ("questGraphics", "questGraphicsEnabled", "Quest Graphics"),
 ];
 
-fn launcher_data_dir() -> Option<PathBuf> {
+pub(crate) fn launcher_data_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "linux")]
+    { return crate::linux::vanilla_data_dir(); }
+    #[cfg(not(target_os = "linux"))]
     Some(PathBuf::from(std::env::var_os("APPDATA")?).join("VanillaLauncher"))
 }
 
@@ -142,7 +145,12 @@ fn summary() -> Value {
         .as_ref()
         .and_then(|v| v.get("installDirectory"))
         .and_then(Value::as_str)
-        .map(str::to_string)
+        .map(|p| {
+            #[cfg(target_os = "linux")]
+            { crate::linux::vanilla_install_root(p).unwrap_or_else(|| p.to_string()) }
+            #[cfg(not(target_os = "linux"))]
+            { p.to_string() }
+        })
         .filter(|s| !s.trim().is_empty())
         .or_else(|| launcher_data_dir().map(|d| d.join("Installs").to_string_lossy().to_string()));
     json!({
@@ -163,6 +171,9 @@ pub fn vanilla_launcher_settings() -> Value {
 /// Turn one of Vanilla's launcher settings on or off. Returns the new summary.
 #[tauri::command(async)]
 pub fn set_vanilla_launcher_setting(name: String, value: bool) -> Result<Value, String> {
+    if cfg!(target_os = "linux") {
+        return Err("Change these options in Vanilla's official launcher while running on Linux.".into());
+    }
     let (_, key, label) = SETTINGS
         .iter()
         .find(|(n, _, _)| *n == name)

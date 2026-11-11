@@ -1021,8 +1021,31 @@
                   <div class="toggle-wrap" id="tgl-disableWarnings"><div class="tgl-knob"></div></div>
                 </div>
               </div>
+              <div class="settings-group" id="linuxRuntimeGroup" hidden>
+                <div class="sg-title">Linux / Proton</div>
+                <p class="sg-desc">Requires native Linux Steam and an installed Valve Proton release. Leave paths empty for automatic detection and separate prefixes. Linux gameplay validation is pending; VR is experimental.</p>
+                <div class="sg-row">
+                  <label class="sg-label" for="linuxRuntimeNetwork">Network</label>
+                  <select id="linuxRuntimeNetwork"><option value="receos">Rec EOS</option><option value="radium">Radium</option><option value="vanilla">Vanilla</option><option value="stella">Stella</option></select>
+                </div>
+                <div class="sg-row sg-row-stack">
+                  <label class="sg-label" for="linuxSteamDir">Steam directory (all networks)</label>
+                  <div class="linux-path-control"><input class="input" id="linuxSteamDir" placeholder="Automatic" spellcheck="false"><button class="btn-refresh" type="button" data-linux-directory="linuxSteamDir">Browse</button></div>
+                </div>
+                <div class="sg-row sg-row-stack">
+                  <label class="sg-label" for="linuxProtonDir">Proton directory</label>
+                  <div class="linux-path-control"><input class="input" id="linuxProtonDir" placeholder="Newest installed stable Valve Proton" spellcheck="false"><button class="btn-refresh" type="button" data-linux-directory="linuxProtonDir">Browse</button></div>
+                </div>
+                <div class="sg-row sg-row-stack">
+                  <label class="sg-label" for="linuxCompatDataDir">Compatibility-data directory</label>
+                  <div class="linux-path-control"><input class="input" id="linuxCompatDataDir" placeholder="Separate prefix for this network" spellcheck="false"><button class="btn-refresh" type="button" data-linux-directory="linuxCompatDataDir">Browse</button></div>
+                </div>
+                <p class="sg-desc" id="linuxRuntimeStatus" role="status"></p>
+                <button class="btn-refresh" type="button" id="linuxRuntimeCheck">Check Steam / Proton</button>
+              </div>
             </div>
 
+            <!-- Linux controls are revealed only after querying the backend. -->
             <!-- ── Home ── -->
             <!-- What Home shows and in what order (config.home, rows built by
                  renderHomeLayoutList), and the picture at the top of it for

@@ -54,6 +54,10 @@ steamworks = "0.13"
 # mod's in-game updater makes.
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+gio = "0.18"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
@@ -78,6 +82,7 @@ windows-sys = { version = "0.59", features = [
     # Loading Stella's patch into the game it starts (stella.rs).
     "Win32_System_Memory",
     "Win32_System_Diagnostics_Debug",
+    "Win32_System_ProcessStatus",
 ] }
 
 # Optimise dependencies even in dev builds, while leaving this crate itself

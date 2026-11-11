@@ -1,0 +1,121 @@
+name: Desktop builds
+
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri -> target
+            src-tauri/compat-helper -> target
+      - run: npm ci
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
+      - run: npm run prepare:proton-helper
+      - run: cargo test --locked --manifest-path src-tauri/compat-helper/Cargo.toml
+      - run: node scripts/build.mjs --unsigned
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proton-helper-windows-x64
+          path: src-tauri/resources/receos-proton-helper.exe
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+
+  linux:
+    needs: windows
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf libfuse2 libnotify-bin xdg-utils xvfb gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: proton-helper-windows-x64
+          path: src-tauri/resources
+      - run: node scripts/prepare-linux.mjs
+      - run: xvfb-run -a cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
+      - run: npm run build:linux
+      - name: Package layouts, linking and headless frontend startup
+        run: bash scripts/smoke-linux.sh src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+      - name: Prepare desktop test driver
+        run: cargo install tauri-driver --version 2.1.0 --locked --root /tmp/receos-driver
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-desktop-driver
+          path: /tmp/receos-driver/bin/tauri-driver
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x64-gameplay-validation-pending
+          path: |
+            src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
+            src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+
+  linux-desktop:
+    needs: linux
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['ubuntu:22.04', 'ubuntu:24.04', 'debian:12']
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - name: Install desktop test dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates python3 python3-dbus python3-gi libwebkit2gtk-4.1-0 libgtk-3-0 libayatana-appindicator3-1 libnotify-bin xdg-utils xvfb xauth dbus-x11 dunst libssl-dev webkit2gtk-driver weston xwayland libgl1-mesa-dri libegl1 libgles2 desktop-file-utils gstreamer1.0-plugins-base gstreamer1.0-plugins-good pulseaudio
+          if ! id 1000 >/dev/null 2>&1; then useradd --create-home --uid 1000 validation; fi
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-x64-gameplay-validation-pending
+          path: src-tauri/target/linux-validation/account-free/release-ubuntu22
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-desktop-driver
+          path: src-tauri/target/linux-validation/account-free
+      - name: Install both package formats
+        shell: bash
+        run: |
+          deb=$(find src-tauri/target/linux-validation/account-free/release-ubuntu22 -name '*.deb' -print -quit)
+          image=$(find src-tauri/target/linux-validation/account-free/release-ubuntu22 -name '*.AppImage' -print -quit)
+          bash tests/linux/install-packages.sh "$deb" "$image"
+      - name: X11 and Wayland desktop integration
+        shell: bash
+        run: |
+          user=$(getent passwd 1000 | cut -d: -f1)
+          runuser -u "$user" -- env HOME=/tmp/receos-test-home bash tests/linux/run-desktop-matrix.sh /tmp/receos-desktop-results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: desktop-results-${{ strategy.job-index }}
+          path: /tmp/receos-desktop-results

@@ -798,9 +798,10 @@ impl Drop for TicketHelper {
 ///
 /// Fails cleanly when Steam isn't running or the account doesn't own the app —
 /// the caller turns that into a message the tab can show.
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn steam_ticket() -> Result<SteamTicket, String> {
     use std::io::BufRead;
+    #[cfg(windows)]
     use std::os::windows::process::CommandExt;
     use std::process::Stdio;
 
@@ -810,13 +811,14 @@ fn steam_ticket() -> Result<SteamTicket, String> {
         return Err(STEAM_NOT_RUNNING.into());
     }
     let exe = std::env::current_exe().map_err(|e| format!("Couldn't start Stella's Steam sign-in: {e}"))?;
-    let mut child = std::process::Command::new(exe)
-        .arg(TICKET_HELPER_ARG)
+    let mut command = std::process::Command::new(exe);
+    command.arg(TICKET_HELPER_ARG)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
-        .spawn()
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let mut child = command.spawn()
         .map_err(|e| format!("Couldn't start Stella's Steam sign-in: {e}"))?;
     let stdout = child.stdout.take();
     let helper = TicketHelper(Some(child));
@@ -848,7 +850,7 @@ fn steam_ticket() -> Result<SteamTicket, String> {
     Ok(SteamTicket { steam_id, ticket_hex, _helper: helper })
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 fn steam_ticket() -> Result<SteamTicket, String> {
     Err("Stella sign-in is only supported on Windows.".into())
 }
@@ -858,7 +860,7 @@ fn steam_ticket() -> Result<SteamTicket, String> {
 /// prints the ticket on one [`TICKET_LINE`], keeps it (and Steam's callbacks)
 /// alive until the launcher closes this process's stdin, and exits. Returns
 /// the exit code.
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 pub fn steam_ticket_helper() -> i32 {
     use std::io::{Read, Write};
     let answer = |v: Value| {
@@ -867,7 +869,9 @@ pub fn steam_ticket_helper() -> i32 {
         let _ = out.flush();
     };
 
+    #[cfg(windows)]
     let dir = std::env::current_exe().ok().and_then(|exe| exe.parent().map(std::path::Path::to_path_buf));
+    #[cfg(windows)]
     if !dir.is_some_and(|dir| load_steam_api(&dir)) {
         answer(json!({ "error": "Stella sign-in needs steam_api64.dll, which is missing from the launcher's folder. \
                                  Reinstall the launcher to put it back." }));
@@ -912,7 +916,7 @@ pub fn steam_ticket_helper() -> i32 {
     0
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 pub fn steam_ticket_helper() -> i32 {
     1
 }
@@ -1027,13 +1031,7 @@ fn is_device_id(s: &str) -> bool {
 
 /// Walk Rec Room's Unity analytics events for the first `"deviceid":"<40 hex>"`.
 fn scan_device_id() -> Option<String> {
-    let base = std::env::var("USERPROFILE").ok()?;
-    let analytics = std::path::Path::new(&base)
-        .join("AppData")
-        .join("LocalLow")
-        .join("Against Gravity")
-        .join("Rec Room")
-        .join("Unity");
+    let analytics = rec_room_data_directory()?.join("Unity");
     let mut found = None;
     // Bounded walk: Unity/<appid>/Analytics/ArchivedEvents/<batch>/{e,s}
     visit_files(&analytics, 6, &mut |path| {
@@ -2266,16 +2264,24 @@ pub async fn stella_ask_to_join(app: tauri::AppHandle, player_id: i64) -> Result
 
 /// The game's own log. Unity moves the last one to `Player-prev.log` and
 /// starts this afresh at each launch.
-fn game_log_path() -> Option<std::path::PathBuf> {
+fn rec_room_data_directory() -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "linux")]
+    { return crate::linux::rec_room_data_dir(crate::config::Network::Stella); }
+    #[cfg(not(target_os = "linux"))]
+    {
     let base = std::env::var("USERPROFILE").ok()?;
     Some(
         std::path::Path::new(&base)
             .join("AppData")
             .join("LocalLow")
             .join("Against Gravity")
-            .join("Rec Room")
-            .join("Player.log"),
+            .join("Rec Room"),
     )
+    }
+}
+
+fn game_log_path() -> Option<std::path::PathBuf> {
+    Some(rec_room_data_directory()?.join("Player.log"))
 }
 
 /// Where the game's log ends now. Taken before a launch, so that waiting for

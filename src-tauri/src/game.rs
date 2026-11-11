@@ -224,12 +224,17 @@ fn client_dirs(app: &tauri::AppHandle) -> Vec<String> {
 /// folder — never the whole install directory, which a user could point at a
 /// broad folder that also holds official Rec Room.
 pub(crate) fn vanilla_launcher_game_dir() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    { return crate::linux::vanilla_game_dir(); }
+    #[cfg(not(target_os = "linux"))]
+    {
     let data = std::path::PathBuf::from(std::env::var_os("APPDATA")?).join("VanillaLauncher");
     let settings = std::fs::read_to_string(data.join("settings.json")).ok();
     vanilla_game_candidates(settings.as_deref(), &data)
         .into_iter()
         .next()
         .map(|dir| dir.to_string_lossy().to_string())
+    }
 }
 
 /// Whether a `PROCESSENTRY32W` image name matches any of `images`.
@@ -267,13 +272,14 @@ fn utf16_eq_ignore_ascii_case(utf16: &[u16], ascii: &str) -> bool {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn any_process_running(_images: &[&str]) -> bool {
-    false
+fn any_process_running(images: &[&str]) -> bool {
+    if images.contains(&"steam.exe") { crate::linux::steam_running() }
+    else { crate::linux::game_running(images, false) }
 }
 
 #[cfg(not(target_os = "windows"))]
-fn client_running(_images: &[&str], _dirs: &[String]) -> bool {
-    false
+fn client_running(images: &[&str], _dirs: &[String]) -> bool {
+    crate::linux::game_running(images, true)
 }
 
 /// Terminate every running process with one of the given image names that
@@ -373,15 +379,15 @@ pub fn rec_room_running() -> bool {
     any_process_running(&GAME_EXES)
 }
 
-/// Checks whether `steam.exe` is currently running.
+/// Checks for the current user's native Steam process on Windows or Linux.
 #[tauri::command(async)]
 pub fn check_steam() -> bool {
     any_process_running(&["steam.exe"])
 }
 
 /// Returns true if the required Rec Room Steam app (appid 92) is installed,
-/// by reading the Steam per-user registry key. Returns true on non-Windows so
-/// the check never blocks there.
+/// by reading the Steam per-user registry key on Windows or library manifests
+/// on Linux. Other unsupported platforms keep the permissive fallback.
 #[tauri::command(async)]
 pub fn check_required_steam_app() -> bool {
     #[cfg(target_os = "windows")]
@@ -395,7 +401,7 @@ pub fn check_required_steam_app() -> bool {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        true
+        if cfg!(target_os = "linux") { crate::linux::required_steam_app() } else { true }
     }
 }
 
@@ -469,7 +475,7 @@ pub fn find_vanilla_launcher() -> Option<String> {
 
 #[cfg(not(target_os = "windows"))]
 pub fn find_vanilla_launcher() -> Option<String> {
-    None
+    if cfg!(target_os = "linux") { crate::linux::vanilla_launcher() } else { None }
 }
 
 /// EXPERIMENTAL auto-play for Vanilla. Opens Vanilla's own launcher and then,
@@ -491,6 +497,12 @@ pub fn find_vanilla_launcher() -> Option<String> {
 /// on a throwaway account first.
 #[tauri::command]
 pub async fn autoplay_vanilla(app: tauri::AppHandle, mode: Option<String>) -> Result<Value, String> {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = mode;
+        let result = launch_game(app, json!({"network": "vanilla"})).await?;
+        return Ok(result);
+    }
     let Some(launcher) = find_vanilla_launcher() else {
         return Ok(json!({ "success": false, "autoplay": "no_launcher" }));
     };
@@ -1066,6 +1078,12 @@ fn launch_game_impl(
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(0x00000008); // DETACHED_PROCESS
         }
+        #[cfg(target_os = "linux")]
+        {
+            crate::linux::launch(&app, config::Network::Vanilla, Path::new(&launcher), &[])?;
+            return Ok(json!({ "success": true, "handoff": "vanilla-launcher" }));
+        }
+        #[cfg(not(target_os = "linux"))]
         cmd.spawn()
             .map_err(|e| format!("Couldn't open Vanilla's launcher: {}", e))?;
         return Ok(json!({ "success": true, "handoff": "vanilla-launcher" }));
@@ -1187,6 +1205,19 @@ fn launch_game_impl(
     } else {
         None
     };
+    #[cfg(target_os = "linux")]
+    let child = {
+        if stella_pid.is_none() {
+            let mut args = Vec::new();
+            if network == config::Network::RecEos || file_lower == "recroom.exe" {
+                args.push(mode_arg.to_string());
+            }
+            if let Some(target) = join_arg.as_ref().or(room_arg.as_ref()) { args.push(target.clone()); }
+            crate::linux::launch(&app, network, exe, &args)?;
+        }
+        0u32
+    };
+    #[cfg(not(target_os = "linux"))]
     let child = if let Some(pid) = stella_pid {
         pid
     } else if network == config::Network::RecEos {
@@ -1224,7 +1255,7 @@ fn launch_game_impl(
     // A .bat launch goes through `cmd /c start`, so `child` is the transient
     // cmd.exe wrapper (which exits immediately), not the game — its PID is
     // meaningless. Only report a PID for a direct executable launch.
-    let pid_value = if is_bat && stella_pid.is_none() { Value::Null } else { Value::from(child) };
+    let pid_value = if cfg!(target_os = "linux") || (is_bat && stella_pid.is_none()) { Value::Null } else { Value::from(child) };
 
     // 7. Enter the post-launch "grace" state and mark the game as running.
     //
@@ -1283,8 +1314,8 @@ fn launch_game_impl(
 /// official Rec Room through Steam — is not the launcher's to close.
 #[tauri::command(async)]
 pub fn kill_game(app: tauri::AppHandle) -> bool {
-    // Off Windows nothing is found and `game_running` already reports false,
-    // so nothing can ask for this in the first place.
+    // Windows uses process handles; Linux uses prefix/image ownership checks
+    // and pidfds, so a reused PID or another Steam game cannot be targeted.
     #[cfg(target_os = "windows")]
     {
         terminate_client_processes(&GAME_EXES, &client_dirs(&app));
@@ -1293,7 +1324,7 @@ pub fn kill_game(app: tauri::AppHandle) -> bool {
     #[cfg(not(target_os = "windows"))]
     {
         let _ = app;
-        false
+        crate::linux::stop_games()
     }
 }
 

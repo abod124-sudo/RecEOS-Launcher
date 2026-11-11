@@ -1,14 +1,17 @@
 {
   "name": "rec-eos-launcher",
   "version": "4.0.0",
-  "description": "Rec EOS Launcher — Rec Room revival launcher",
+  "description": "Rec EOS Launcher \u00e2\u20ac\u201d Rec Room revival launcher",
   "private": true,
   "scripts": {
-    "dev": "tauri dev",
-    "build": "tauri build && node scripts/sign-update.mjs",
+    "dev": "node scripts/build.mjs --dev",
+    "build": "node scripts/build.mjs",
     "dev:x64": "tauri dev --target x86_64-pc-windows-msvc",
-    "build:x64": "tauri build --target x86_64-pc-windows-msvc && node scripts/sign-update.mjs",
-    "sign:update": "node scripts/sign-update.mjs"
+    "build:x64": "node scripts/build.mjs --target x86_64-pc-windows-msvc",
+    "sign:update": "node scripts/sign-update.mjs",
+    "build:linux": "node scripts/build.mjs --linux --target x86_64-unknown-linux-gnu",
+    "dev:linux": "node scripts/build.mjs --linux --dev --target x86_64-unknown-linux-gnu",
+    "prepare:proton-helper": "node scripts/prepare-linux.mjs --build-helper"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"

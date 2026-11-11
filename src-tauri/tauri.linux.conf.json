@@ -1,0 +1,45 @@
+{
+  "bundle": {
+    "targets": [
+      "deb",
+      "appimage"
+    ],
+    "resources": {
+      "resources/libsteam_api.so": "libsteam_api.so",
+      "resources/receos-proton-helper.exe": "receos-proton-helper.exe"
+    },
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0",
+          "libssl3",
+          "libayatana-appindicator3-1",
+          "gstreamer1.0-plugins-base",
+          "gstreamer1.0-plugins-good",
+          "libnotify-bin",
+          "xdg-utils"
+        ]
+      },
+      "appimage": { "bundleMediaFramework": true }
+    }
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Rec EOS Launcher",
+        "label": "main",
+        "width": 1000,
+        "height": 650,
+        "minWidth": 900,
+        "minHeight": 550,
+        "resizable": true,
+        "decorations": false,
+        "transparent": false,
+        "shadow": true,
+        "center": true,
+        "visible": false
+      }
+    ]
+  }
+}

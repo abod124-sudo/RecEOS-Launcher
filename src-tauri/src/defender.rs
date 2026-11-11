@@ -191,6 +191,7 @@ fn not_held_by_others(cfg: &config::Config, network: Network, dirs: &[String]) -
 /// movedFrom: [folders taken out] }` or `{ success: false, error }`.
 #[tauri::command]
 pub async fn add_defender_exclusion(app: tauri::AppHandle, network: Option<String>) -> Value {
+    if !cfg!(windows) { return serde_json::json!({"success": false, "error": "Windows Defender is only available on Windows."}); }
     let cfg = config::current(&app);
     let network = network_of(&cfg, network);
     let dirs = config::exclusion_dirs_for(&cfg, network, &config::app_data_dir(&app));
@@ -244,6 +245,7 @@ pub async fn add_defender_exclusion(app: tauri::AppHandle, network: Option<Strin
 /// excluded: false }` or `{ success: false, error }`.
 #[tauri::command]
 pub async fn remove_defender_exclusion(app: tauri::AppHandle, network: Option<String>) -> Value {
+    if !cfg!(windows) { return serde_json::json!({"success": false, "error": "Windows Defender is only available on Windows."}); }
     let cfg = config::current(&app);
     let network = network_of(&cfg, network);
     let targets = not_held_by_others(&cfg, network, cfg.defender_dirs_for(network));

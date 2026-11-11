@@ -5639,3 +5639,17 @@ body.theme-moderndark .wordmark-text {
 /* A dialog playing its exit animation (hideModal() in app.js) is already
    closed: clicks must not land on its buttons a second time. */
 .modal-overlay.is-closing { pointer-events: none; }
+
+/* Native Linux uses a desktop menu and compositor-safe solid window. */
+body.platform-linux #btnExcludeAv,
+body.platform-linux #avModal,
+body.platform-linux #thirdPartyAvModal,
+body.platform-linux #sacModal,
+body.platform-linux #vanillaSettingsGroup,
+body.platform-linux.network-vanilla #btnReinstall,
+body.platform-linux.network-vanilla #btnUninstall { display: none !important; }
+body.platform-linux { background-color: var(--bg, #17191f); }
+body.platform-linux.glass-enabled { background-color: var(--lg-tint, #202634); }
+.linux-path-control { display: flex; gap: 8px; width: 100%; }
+.linux-path-control input { min-width: 0; flex: 1; }
+#linuxRuntimeStatus { overflow-wrap: anywhere; }

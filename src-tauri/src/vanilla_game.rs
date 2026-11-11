@@ -162,7 +162,7 @@ fn file_url(path: &str) -> String {
 /// launcher sometimes records it as `""` (seen when it signs off files that
 /// were already on disk), so presence is what counts, not the value.
 fn launcher_entry() -> Option<String> {
-    let path = PathBuf::from(std::env::var_os("APPDATA")?).join("VanillaLauncher").join("settings.json");
+    let path = crate::vanilla_launcher::launcher_data_dir()?.join("settings.json");
     let v: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
     v.get("installedVersions")?.get(APP_ID)?.as_str().map(str::to_string)
 }
@@ -636,6 +636,10 @@ fn remove_dropped(root: &Path, new: &Manifest) -> usize {
 /// off. Shares the client download's guard, cancel and pause with the rest of
 /// the launcher, and reports on the same `download-progress` event.
 pub(crate) async fn download(app: AppHandle) -> Result<Value, String> {
+    #[cfg(target_os = "linux")]
+    {
+        return crate::game::launch_game(app, serde_json::json!({"network": "vanilla"})).await;
+    }
     let _guard = crate::download::claim_client_task()?;
     crate::download::reset_cancel();
     crate::download::reset_pause();
@@ -874,6 +878,9 @@ fn check_every_file(
 /// not installed (a download fills in what's missing) rather than installed
 /// with files gone. Refuses a folder that doesn't look like Vanilla's game.
 pub(crate) async fn uninstall(app: &AppHandle) -> Result<(), String> {
+    if cfg!(target_os = "linux") {
+        return Err("Manage Vanilla's game installation in its official launcher under Proton. The prefix is retained.".into());
+    }
     if crate::game::game_running(app) {
         return Err("Cannot uninstall while the game is running.".into());
     }
@@ -973,7 +980,7 @@ fn remove_tree(dir: &Path) -> Result<(), String> {
 /// Remove Vanilla's entry from the launcher's `installedVersions` (and only
 /// that), as the launcher's own Uninstall does.
 fn forget_launcher_entry() -> Result<(), String> {
-    if let Some(path) = std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("VanillaLauncher").join("settings.json")) {
+    if let Some(path) = crate::vanilla_launcher::launcher_data_dir().map(|a| a.join("settings.json")) {
         if let Ok(text) = std::fs::read_to_string(&path) {
             if let Ok(mut v) = serde_json::from_str::<Value>(&text) {
                 let removed = v.get_mut("installedVersions").and_then(Value::as_object_mut).is_some_and(|m| m.remove(APP_ID).is_some());

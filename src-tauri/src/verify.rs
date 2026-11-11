@@ -1203,6 +1203,9 @@ pub async fn repair_client(app: tauri::AppHandle, network: Option<String>, full:
     // Vanilla: a normal game download, which fetches exactly the files the
     // check failed (it forgot them; every other file is remembered as fine).
     if network == Network::Vanilla {
+        if cfg!(target_os = "linux") {
+            return json!({"success": false, "error": "Use Vanilla's official launcher under Proton to repair or update the game."});
+        }
         return match crate::vanilla_game::download(app).await {
             Ok(v) => json!({ "success": true, "repaired": v.get("downloadedFiles").and_then(Value::as_u64).unwrap_or(0) }),
             Err(e) => json!({ "success": false, "error": e }),

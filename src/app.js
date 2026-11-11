@@ -10,6 +10,7 @@
 // failure there used to leave no trace at all.
 
 var LOG_LEVELS = { info: 'INFO', ok: 'OK', warn: 'WARN', error: 'ERROR' };
+let platformCapabilities = { linux: false, windowsSecurity: true };
 /// Where a line comes from. The Logs page filters on it, and it is written
 /// into the line so a log read outside the launcher says the same.
 var LOG_SOURCES = {
@@ -314,6 +315,10 @@ function syncAvState(network, excluded, dirs) {
 /// Placeholder for the log/modal text before checkInstall() has resolved the
 /// real path. Per-network, since each defaults to its own folder.
 function defaultInstallDirHint(network = activeNetwork) {
+  if (platformCapabilities.linux) {
+    if (network === 'vanilla') return "Vanilla's Proton prefix (chosen in its official launcher)";
+    return `~/.local/share/com.receos.launcher/${network === 'radium' ? 'client' : `client-${network}`}`;
+  }
   if (network === 'vanilla') return '%APPDATA%\\VanillaLauncher\\Installs\\Vanilla';
   const folder = network === 'radium' ? 'client' : `client-${network}`;
   return `%APPDATA%\\com.radium.launcher\\${folder}`;
@@ -530,11 +535,14 @@ function withoutBackdrop(cfg) {
     },
 
     // Misc
-    openUrl:    (url)  => open(url),
+    openUrl:    (url)  => platformCapabilities.linux ? invoke('open_linux_url', { url }) : open(url),
     getVersion: ()     => invoke('get_version'),
     checkSteam: ()     => invoke('check_steam'),
     checkRequiredSteamApp: () => invoke('check_required_steam_app'),
     checkSmartAppControl: () => invoke('check_smart_app_control'),
+    getPlatformCapabilities: () => invoke('get_platform_capabilities'),
+    getLinuxRuntimeStatus: (network = activeNetwork) => invoke('get_linux_runtime_status', { network }),
+    pickLinuxDirectory: () => invoke('pick_linux_directory'),
 
     // Auto-update. Only the installer the last check offered is accepted, and
     // the backend checks it against the digest GitHub published with it.
@@ -1630,7 +1638,19 @@ async function loadVersion() {
 }
 
 async function loadConfig() {
+  platformCapabilities = await window.radium?.getPlatformCapabilities?.() || platformCapabilities;
+  document.body.classList.toggle('platform-linux', platformCapabilities.linux === true);
   config = (await window.radium?.getConfig()) || {};
+  if (platformCapabilities.linux) {
+    const startup = $('tgl-launchAtStartup')?.closest('.sg-toggle-row');
+    if (startup) {
+      startup.querySelector('.sg-label').textContent = 'Start at login';
+      startup.querySelector('.sg-desc').textContent = 'Opens when you sign in. Enable tray mode to start quietly.';
+    }
+    const warnings = $('row-disableWarnings')?.querySelector('.sg-desc');
+    if (warnings) warnings.textContent = 'Skip optional Steam warnings. Proton and file integrity checks still apply.';
+    $('linuxRuntimeGroup').hidden = false;
+  }
 
   // Defaults
   if (!config.apiUrl)   config.apiUrl   = 'https://api.radie.app/';
@@ -1689,6 +1709,10 @@ async function loadConfig() {
   // Network last, so the brand and capability gating are applied against a
   // fully-loaded config.
   applyNetworkUI(NETWORKS[config.network] ? config.network : 'radium');
+  if (platformCapabilities.linux) {
+    $('linuxRuntimeNetwork').value = activeNetwork;
+    refreshLinuxRuntimeSettings();
+  }
 
   // Both install rows, not just the active network's — after applyNetworkUI so
   // the ACTIVE tag lands on the row the loaded config actually selected.
@@ -1966,6 +1990,57 @@ async function refreshAutostartToggle() {
     setToggle('tgl-launchAtStartup', await window.radium.getAutostart());
   } catch (e) {}
 }
+
+async function refreshLinuxRuntimeSettings() {
+  if (!platformCapabilities.linux) return;
+  const network = $('linuxRuntimeNetwork').value;
+  const settings = config.linux || {};
+  const selected = settings.networks?.[network] || {};
+  setValue('linuxSteamDir', settings.steamDir || '');
+  setValue('linuxProtonDir', selected.protonDir || '');
+  setValue('linuxCompatDataDir', selected.compatDataDir || '');
+  const status = $('linuxRuntimeStatus');
+  status.textContent = 'Checking Steam and Proton...';
+  try {
+    const result = await window.radium.getLinuxRuntimeStatus(network);
+    if ($('linuxRuntimeNetwork').value !== network) return;
+    status.textContent = result.ready
+      ? `Ready: ${result.protonDir}. Prefix: ${result.compatDataDir}. Linux gameplay validation is pending; VR is experimental.`
+      : result.error;
+  } catch (error) { status.textContent = String(error); }
+}
+
+async function saveLinuxRuntimeSettings() {
+  const network = $('linuxRuntimeNetwork').value;
+  const updated = { ...config, linux: {
+    ...(config.linux || {}), steamDir: $('linuxSteamDir').value.trim(),
+    networks: { ...(config.linux?.networks || {}), [network]: {
+      protonDir: $('linuxProtonDir').value.trim(), compatDataDir: $('linuxCompatDataDir').value.trim(),
+    } },
+  } };
+  try {
+    if (!await window.radium.saveConfig(updated)) throw new Error('Could not save runtime settings. Close the game and finish current file operations first.');
+    config = updated;
+    showAutosaveIndicator('saved', '✓ Saved');
+  } catch (error) { toast(String(error), 'error', 6000); }
+  await refreshLinuxRuntimeSettings();
+}
+
+$('linuxRuntimeNetwork')?.addEventListener('change', refreshLinuxRuntimeSettings);
+for (const id of ['linuxSteamDir', 'linuxProtonDir', 'linuxCompatDataDir']) {
+  $(id)?.addEventListener('change', saveLinuxRuntimeSettings);
+}
+document.querySelectorAll('[data-linux-directory]').forEach(button => {
+  button.addEventListener('click', async () => {
+    try {
+      const path = await window.radium.pickLinuxDirectory();
+      if (!path) return;
+      setValue(button.dataset.linuxDirectory, path);
+      await saveLinuxRuntimeSettings();
+    } catch (error) { toast(String(error), 'error'); }
+  });
+});
+$('linuxRuntimeCheck')?.addEventListener('click', refreshLinuxRuntimeSettings);
 $('tgl-launchAtStartup')?.addEventListener('click', async () => {
   const el = $('tgl-launchAtStartup');
   if (el.dataset.pending === 'true') return;
@@ -1975,7 +2050,9 @@ $('tgl-launchAtStartup')?.addEventListener('click', async () => {
   try {
     const now = await window.radium.setAutostart(want);
     setToggle('tgl-launchAtStartup', now);
-    addLog(now ? 'Rec EOS Launcher will start with Windows' : 'Rec EOS Launcher will no longer start with Windows', 'info');
+    addLog(platformCapabilities.linux
+      ? (now ? 'Rec EOS Launcher will start at login' : 'Rec EOS Launcher will no longer start at login')
+      : (now ? 'Rec EOS Launcher will start with Windows' : 'Rec EOS Launcher will no longer start with Windows'), 'info');
   } catch (err) {
     setToggle('tgl-launchAtStartup', !want);
     toast(String(err), 'error');
@@ -2104,10 +2181,12 @@ function applyVanillaSettings(s) {
   }
   // Hidden rather than dimmed: dimming small controls leaves artifacts.
   const group = $('vanillaSettingsGroup');
-  if (group) group.hidden = !installed;
+  if (group) group.hidden = !installed || platformCapabilities.linux;
   const desc = $('vanillaSettingsDesc');
   if (desc) {
-    desc.textContent = installed
+    desc.textContent = platformCapabilities.linux
+      ? "On Linux, sign in, change game options, and install updates in Vanilla's official launcher. Press PLAY to open it under Proton."
+      : installed
       ? "Vanilla's game options. These are the same settings as in Vanilla's own launcher."
       : "Install Vanilla's launcher (GET VANILLA on Home) to change these.";
   }
@@ -3246,6 +3325,12 @@ async function checkVanillaLauncherUpdate({ manual = false } = {}) {
 }
 
 function applyVanillaLauncherUpdateRow(s) {
+  if (platformCapabilities.linux) {
+    if ($('vanillaLauncherVersion')) $('vanillaLauncherVersion').textContent = "Manage updates in Vanilla's official launcher under Proton.";
+    if ($('btnVanillaLauncherCheck')) $('btnVanillaLauncherCheck').hidden = true;
+    if ($('btnVanillaLauncherUpdate')) $('btnVanillaLauncherUpdate').hidden = true;
+    return;
+  }
   const desc = $('vanillaLauncherVersion');
   const btn = $('btnVanillaLauncherUpdate');
   if (desc) {
@@ -3877,7 +3962,10 @@ async function runClientDownload({ resuming = false } = {}) {
   const elapsed = ((Date.now() - dlStart) / 1000).toFixed(1);
   if (result?.success) {
     setDownloadUI(false);
-    if (activeNetwork === 'vanilla') {
+    if (platformCapabilities.linux && result.handoff === 'vanilla-launcher') {
+      addLog("Opened Vanilla's official launcher under Proton. Install or update the game there.", 'info', 'install');
+      toast("Finish installation or updates in Vanilla's launcher.", 'info', 7000);
+    } else if (activeNetwork === 'vanilla') {
       lastVanillaSignOff = !!result.signedOff;
       addLog(`Vanilla ${result.version || ''} downloaded in ${elapsed}s (${result.downloadedFiles ?? 0} files fetched, the rest already there).`, 'ok', 'install');
       if (result.signedOff) {
@@ -5244,6 +5332,17 @@ $('steamModal')?.addEventListener('click', (e) => {
 // Final gate before launching: make sure the required Rec Room Steam app
 // (steam://install/92) is installed. If it already is, this is invisible.
 async function executeLaunch() {
+  if (platformCapabilities.linux) {
+    try {
+      const runtime = await window.radium.getLinuxRuntimeStatus();
+      if (!runtime.ready) throw new Error(runtime.error || 'Proton is not ready. Check Linux / Proton settings.');
+    } catch (error) {
+      isGameLaunching = false;
+      addLog(String(error), 'error', 'game');
+      toast(String(error), 'error', 8000);
+      return;
+    }
+  }
   // Codename Gordon is what the older clients lean on for Steam; Stella's
   // 2024 client and Rec EOS's 2022 one don't need it. Vanilla now launches
   // through its own launcher, which handles its own requirements, so the
@@ -5388,6 +5487,17 @@ async function doLaunch() {
   // opens that launcher and auto-presses its Play button via the backend. We
   // don't start RecRoom.exe ourselves, so this doesn't go through launchGame.
   if (activeNetwork === 'vanilla') {
+    if (platformCapabilities.linux) {
+      try {
+        const result = await window.radium.launchGame({});
+        if (!result?.success) throw new Error(result?.error || "Could not open Vanilla's launcher.");
+        toast("Vanilla's launcher is opening under Proton. Sign in and press Play there.", 'info', 8000);
+      } catch (error) {
+        addLog(String(error), 'error', 'game');
+        toast(String(error), 'error', 8000);
+      } finally { isGameLaunching = false; }
+      return;
+    }
     await autoplayVanilla();
     return;
   }
@@ -5492,6 +5602,7 @@ async function proceedAfterAvCheck() {
 // game's patched files aren't quarantined. Flows into the Smart App Control
 // check, then the Steam check, then the actual launch.
 async function checkAvAndLaunch() {
+  if (platformCapabilities.linux) { await checkSteamAndLaunch(); return; }
   // Vanilla's game lives in Vanilla's launcher's folder, which this exclusion
   // (Rec EOS's own client folders) doesn't cover — nothing to offer there.
   if (activeNetwork === 'vanilla') {
@@ -6656,6 +6767,10 @@ async function setNetwork(name) {
 
   closeNetworkMenu();
   applyNetworkUI(name);
+  if (platformCapabilities.linux) {
+    $('linuxRuntimeNetwork').value = name;
+    refreshLinuxRuntimeSettings();
+  }
   pulseNetworkSwitcher();
   addLog(`Switched network to ${networkInfo().label} (${networkInfo().site}).`, 'ok');
 

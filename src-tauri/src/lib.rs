@@ -7,6 +7,7 @@ pub mod desktop_notify;
 pub mod download;
 pub mod frost;
 pub mod game;
+pub mod linux;
 pub mod migrate;
 pub mod receos;
 pub mod receos_api;
@@ -90,6 +91,10 @@ pub fn run() {
             // Config
             cmd_get_config,
             cmd_save_config,
+            linux::get_platform_capabilities,
+            linux::get_linux_runtime_status,
+            linux::pick_linux_directory,
+            linux::open_linux_url,
             cmd_set_glass_backdrop,
             cmd_fetch_glass_backdrop,
             cmd_set_home_banner,
@@ -234,6 +239,7 @@ pub fn run() {
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();
+            linux::init(app_handle.clone());
 
             // This session's log file, the last one moved aside for a bug
             // report to attach. First, so a panic anywhere below is written.
@@ -277,7 +283,8 @@ pub fn run() {
 
             // The window is created hidden (tauri.conf.json). Started with
             // Windows, it stays in the tray; otherwise it is shown now.
-            if !background::started_in_background() {
+            if !background::started_in_background() || !background::tray_available()
+                || (cfg!(target_os = "linux") && !config::current(&app_handle).run_in_background) {
                 background::show_main(&app_handle);
             }
 
@@ -448,6 +455,10 @@ fn cmd_get_config(app: tauri::AppHandle) -> serde_json::Value {
 fn cmd_save_config(app: tauri::AppHandle, config: serde_json::Value) -> bool {
     match serde_json::from_value::<config::Config>(config) {
         Ok(mut cfg) => {
+            if cfg!(target_os = "linux") && cfg.linux != config::current(&app).linux
+                && (download::client_busy() || game::game_running(&app)) {
+                return false;
+            }
             // Only reject characters that are illegal in Windows paths anyway
             // (plus control chars). Legal folder names like "Games & Mods" or
             // "100%" must be saveable; the launch path is explicitly quoted at

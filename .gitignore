@@ -8,6 +8,11 @@ out/
 
 # Rust / Tauri build artifacts
 src-tauri/target/
+src-tauri/compat-helper/target/
+src-tauri/resources/*.exe
+src-tauri/resources/*.so
+src-tauri/gen/schemas/linux-schema.json
+__pycache__/
 
 # OS Files
 .DS_Store

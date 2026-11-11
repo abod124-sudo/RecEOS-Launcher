@@ -368,6 +368,8 @@ pub struct RecEosState {
 #[serde(rename_all = "camelCase")]
 #[serde(default)]
 pub struct Config {
+    /// Proton configuration is independent of Windows installation settings.
+    pub linux: crate::linux::LinuxSettings,
     pub api_url: String,
     pub game_exe_path: String,
     pub play_mode: String,
@@ -723,6 +725,7 @@ impl Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            linux: crate::linux::LinuxSettings::default(),
             api_url: "https://api.radie.app/".to_string(),
             game_exe_path: String::new(),
             play_mode: "screen".to_string(),
@@ -740,7 +743,7 @@ impl Default for Config {
             close_on_launch: false,
             disable_warnings: false,
             notif_popups: true,
-            run_in_background: true,
+            run_in_background: cfg!(windows),
             autostart_initialized: false,
             notif_sound: true,
             glass: GlassSettings::default(),
@@ -924,10 +927,14 @@ pub fn migrate_themes(config: &mut Config) -> bool {
     changed
 }
 
-/// Canonical form for comparing install paths: forward slashes, lowercase, no
-/// trailing separator. Not for display or filesystem use.
+/// Canonical form for comparing install paths. Windows folds separators and
+/// case; Linux preserves case and resolves existing symlinked ancestors.
 fn norm_dir(p: &str) -> String {
-    p.replace('\\', "/").trim_end_matches('/').to_lowercase()
+    #[cfg(windows)]
+    { p.replace('\\', "/").trim_end_matches('/').to_lowercase() }
+    #[cfg(not(windows))]
+    { crate::linux::resolved_path(std::path::Path::new(p)).map(|p| p.to_string_lossy().trim_end_matches('/').to_string())
+        .unwrap_or_else(|_| p.trim_end_matches('/').to_string()) }
 }
 
 /// "Is this the same folder?" — separator- and case-insensitive. Install paths
@@ -2052,6 +2059,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn a_folder_inside_an_excluded_one_counts_as_excluded() {
         // An exclusion made when a custom location held the client directly
         // still covers the network's subfolder of it.
@@ -2128,6 +2136,31 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_paths_preserve_case_and_separate_nested_clients() {
+        let data = temp_app_data("linux-paths");
+        let upper = data.join("Games");
+        let lower = data.join("games");
+        std::fs::create_dir_all(&upper).unwrap();
+        std::fs::create_dir_all(&lower).unwrap();
+        assert!(!same_dir(&upper.to_string_lossy(), &lower.to_string_lossy()));
+        assert!(!install_dirs_overlap(&upper.to_string_lossy(), &lower.to_string_lossy()));
+        assert!(!path_is_inside_dir(&lower.join("RecRoom.exe").to_string_lossy(), &upper.to_string_lossy()));
+        let mut cfg = Config::default();
+        cfg.install_dir = data.join("client-vanilla").to_string_lossy().into();
+        assert!(dedupe_install_dirs_at(&mut cfg, &data));
+        assert!(cfg.install_dir.is_empty());
+        cfg.stella.install_dir = upper.to_string_lossy().into();
+        assert_eq!(client_dir_for(&cfg, Network::Stella, &data), upper.join("Stella").to_string_lossy());
+        let alias = data.join("alias");
+        std::os::unix::fs::symlink(&upper, &alias).unwrap();
+        assert!(same_dir(&alias.to_string_lossy(), &upper.to_string_lossy()));
+        assert!(install_dirs_overlap(&alias.join("new").to_string_lossy(), &upper.to_string_lossy()));
+        assert!(!path_is_inside_dir(&lower.join("RecRoom.exe").to_string_lossy(), &alias.to_string_lossy()));
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
     #[test]
     fn radium_pointed_at_the_vanilla_folder_is_reset_to_its_own() {
         let data = PathBuf::from("C:/data");
@@ -2145,6 +2178,7 @@ mod tests {
     /// Separators and casing differ between config.json, the folder picker and
     /// `app_data_dir()`, so the collision check cannot be a string compare.
     #[test]
+    #[cfg(windows)]
     fn collision_is_detected_across_separators_and_casing() {
         let data = PathBuf::from("C:/data");
         let mut cfg = Config::default();
@@ -2178,13 +2212,14 @@ mod tests {
         cfg.vanilla.install_dir = "D:/Games/RecRoom".to_string();
 
         assert!(!dedupe_install_dirs_at(&mut cfg, &data));
-        assert!(norm_dir(&client_dir_for(&cfg, Network::Radium, &data)).ends_with("d:/games/recroom/radium"));
-        assert!(norm_dir(&client_dir_for(&cfg, Network::Vanilla, &data)).ends_with("d:/games/recroom/vanilla"));
+        assert!(norm_dir(&client_dir_for(&cfg, Network::Radium, &data)).ends_with(&norm_dir("D:/Games/RecRoom/Radium")));
+        assert!(norm_dir(&client_dir_for(&cfg, Network::Vanilla, &data)).ends_with(&norm_dir("D:/Games/RecRoom/Vanilla")));
     }
 
     /// A custom location always gets the network's subfolder, empty or not,
     /// unless it is already named for that network.
     #[test]
+    #[cfg(windows)]
     fn a_custom_location_resolves_to_the_network_subfolder() {
         let data = PathBuf::from("C:/data");
         let mut cfg = Config::default();
@@ -2201,6 +2236,7 @@ mod tests {
     /// A saved location that is the network's own default folder (what the
     /// old autosave wrote) is that folder, not a subfolder of it.
     #[test]
+    #[cfg(windows)]
     fn a_saved_default_folder_is_the_default_folder() {
         let data = PathBuf::from(r"C:\Users\me\AppData\Roaming\com.radium.launcher");
         let mut cfg = Config::default();
@@ -2283,6 +2319,7 @@ mod tests {
     /// One network's folder inside the other's is the same collision a level
     /// down: the install check searches beneath the folder it is given.
     #[test]
+    #[cfg(windows)]
     fn a_folder_inside_the_other_networks_is_split_apart() {
         let data = PathBuf::from("C:/data");
 
@@ -2567,6 +2604,7 @@ mod tests {
     /// A sibling folder whose name starts with the client dir's name is a
     /// different folder, not a child of it.
     #[test]
+    #[cfg(windows)]
     fn a_sibling_with_a_shared_prefix_is_not_contained() {
         assert!(!path_is_inside_dir(
             r"C:\data\client2\RecRoom.exe",
@@ -2824,6 +2862,7 @@ mod tests {
     /// reset. A folder picked since is the user's, whatever the old folder
     /// still holds.
     #[test]
+    #[cfg(windows)]
     fn only_the_electron_client_folder_counts_as_legacy() {
         let legacy = r"C:\Users\Jane\AppData\Roaming\radium-launcher\client";
         for old in [

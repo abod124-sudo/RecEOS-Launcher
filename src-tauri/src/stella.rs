@@ -421,7 +421,7 @@ pub fn launch(
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 pub fn launch(
     _app: &tauri::AppHandle,
     _exe: &Path,
@@ -431,150 +431,72 @@ pub fn launch(
     Err("Stella can only be launched on Windows.".into())
 }
 
-#[cfg(target_os = "windows")]
-mod inject {
-    use std::os::windows::io::AsRawHandle;
-    use std::path::Path;
-    use std::time::{Duration, Instant};
-
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
-    use windows_sys::Win32::System::Diagnostics::Debug::WriteProcessMemory;
-    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Module32FirstW, Module32NextW, MODULEENTRY32W, TH32CS_SNAPMODULE,
+#[cfg(target_os = "linux")]
+pub fn launch(app: &tauri::AppHandle, exe: &Path, work_dir: &str, args: &[&str]) -> Result<u32, String> {
+    use std::io::Write;
+    use std::process::Stdio;
+    use tauri::Manager;
+    let (patch, _held) = verified_patch(app)?;
+    let cfg = crate::config::current(app);
+    let runtime = crate::linux::resolve(app, crate::config::Network::Stella)?;
+    if !crate::linux::steam_running() { return Err("Start native Linux Steam and sign in before playing Stella.".into()); }
+    let helper = app.path().resource_dir().map_err(|e| e.to_string())?.join("receos-proton-helper.exe");
+    #[cfg(debug_assertions)]
+    let helper = if helper.is_file() { helper } else {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/receos-proton-helper.exe")
     };
-    use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
-    use windows_sys::Win32::System::Memory::{
-        VirtualAllocEx, VirtualFreeEx, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE,
-    };
-    use windows_sys::Win32::System::Threading::{
-        CreateRemoteThread, GetExitCodeThread, WaitForSingleObject,
-    };
-
-    /// The module the patch hooks.
-    const GAME_MODULE: &str = "GameAssembly.dll";
-
-    /// How long the game may take to load its code. A first start on a slow
-    /// disk is the long case.
-    const READY_TIMEOUT: Duration = Duration::from_secs(120);
-
-    /// How often the game's modules are looked at while waiting. Short, since
-    /// the game starts running its code straight after the module loads.
-    const POLL: Duration = Duration::from_millis(5);
-
-    /// How long loading the patch may take.
-    const LOAD_TIMEOUT_MS: u32 = 30_000;
-
-    pub fn load_when_ready(child: &mut std::process::Child, patch: &Path) -> Result<(), String> {
-        let started = Instant::now();
-        loop {
-            if let Ok(Some(status)) = child.try_wait() {
-                return Err(format!("The game exited before it finished starting ({}).", status));
+    if !helper.is_file() { return Err("The Proton helper is missing. Reinstall the Linux package, or prepare the helper before a development build.".into()); }
+    let request = json!({"version": 1, "exe": runtime.windows_path(exe)?,
+        "patch": runtime.windows_path(&patch)?, "sha256": cfg.stella.patch_sha256, "args": args});
+    let mut cmd = runtime.command("run")?;
+    runtime.expose_paths(&mut cmd, &[Path::new(work_dir), patch.parent().ok_or("Patch directory missing")?])?;
+    cmd.env("STEAM_COMPAT_INSTALL_PATH", work_dir);
+    let helper = crate::linux::HelperFiles(crate::linux::stage_helper(&runtime, &helper)?);
+    let directory = helper.0.parent().ok_or("Helper directory missing")?;
+    let input = directory.join("request.json");
+    let output = directory.join("response.json");
+    let mut options = std::fs::OpenOptions::new();
+    use std::os::unix::fs::OpenOptionsExt;
+    options.write(true).create_new(true).mode(0o600);
+    options.open(&input).and_then(|mut file| file.write_all(request.to_string().as_bytes()))
+        .map_err(|e| format!("Cannot prepare the Proton helper request: {e}"))?;
+    // Proton redirects Windows stdout and its Steam shim can detach stdin.
+    // Exchange bounded files in a fresh private directory instead of pipes.
+    cmd.arg(&helper.0).args(["--request-file", &runtime.windows_path(&input)?,
+        "--response-file", &runtime.windows_path(&output)?])
+        .current_dir(work_dir).stdin(Stdio::null()).stdout(Stdio::null());
+    let mut child = cmd.spawn().map_err(|e| format!("Could not start the Proton helper: {e}"))?;
+    let result = (|| -> Result<(), String> {
+        let started = std::time::Instant::now();
+        let reply = loop {
+            if let Some(reply) = crate::linux::helper_reply(&output)? { break reply }
+            if started.elapsed() > std::time::Duration::from_secs(180)
+                || child.try_wait().map_err(|e| e.to_string())?.is_some() {
+                return Err("Stella's Proton helper timed out or exited without confirming its patch.".into());
             }
-            if has_module(child.id(), GAME_MODULE) {
-                break;
-            }
-            if started.elapsed() > READY_TIMEOUT {
-                return Err("The game took too long to start.".into());
-            }
-            std::thread::sleep(POLL);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        if reply["version"] != 1 || reply["success"] != true {
+            return Err(reply["error"].as_str().unwrap_or("Stella patch loading failed.").to_string());
         }
-        // The handle from CreateProcess carries full access to the process.
-        load_library(child.as_raw_handle() as HANDLE, child.id(), patch)
+        Ok(())
+    })();
+    if let Err(error) = result {
+        crate::linux::stop_helper(&runtime, &helper.0);
+        let _ = child.kill();
+        crate::linux::reap(child);
+        crate::linux::stop_games();
+        return Err(format!("Stella's patch could not be loaded, so the game was closed. {error}"));
     }
-
-    /// Whether process `pid` has a module named `name` loaded.
-    fn has_module(pid: u32, name: &str) -> bool {
-        // SAFETY: the snapshot handle is checked before use and closed on
-        // every path. `entry` is zeroed with `dwSize` set, as Module32FirstW
-        // requires, and both calls get that same struct.
-        unsafe {
-            // Fails with ERROR_BAD_LENGTH while the loader is mid-change in a
-            // starting process; the caller simply asks again.
-            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, pid);
-            if snapshot == INVALID_HANDLE_VALUE {
-                return false;
-            }
-            let mut entry: MODULEENTRY32W = std::mem::zeroed();
-            entry.dwSize = std::mem::size_of::<MODULEENTRY32W>() as u32;
-            let mut found = false;
-            if Module32FirstW(snapshot, &mut entry) != 0 {
-                loop {
-                    let len = entry.szModule.iter().position(|&c| c == 0).unwrap_or(entry.szModule.len());
-                    if String::from_utf16_lossy(&entry.szModule[..len]).eq_ignore_ascii_case(name) {
-                        found = true;
-                        break;
-                    }
-                    if Module32NextW(snapshot, &mut entry) == 0 {
-                        break;
-                    }
-                }
-            }
-            CloseHandle(snapshot);
-            found
-        }
-    }
-
-    /// Have `process` (whose id is `pid`) load the DLL at `dll` with
-    /// `LoadLibraryW`.
-    fn load_library(process: HANDLE, pid: u32, dll: &Path) -> Result<(), String> {
-        let wide: Vec<u16> = dll
-            .as_os_str()
-            .to_string_lossy()
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
-        let size = wide.len() * std::mem::size_of::<u16>();
-        let kernel32: Vec<u16> = "kernel32.dll\0".encode_utf16().collect();
-
-        // SAFETY: every handle and allocation is checked before use and
-        // released on every path. `LoadLibraryW` is resolved in this process;
-        // kernel32 is mapped at the same address in every process of a boot
-        // session, so the address is valid in the game too, and its signature
-        // (one pointer in, a handle out) matches a thread start routine's.
-        // The remote buffer holds the NUL-terminated path the call reads.
-        unsafe {
-            let load_library = GetProcAddress(GetModuleHandleW(kernel32.as_ptr()), c"LoadLibraryW".as_ptr().cast())
-                .ok_or("LoadLibraryW was not found.")?;
-
-            let remote = VirtualAllocEx(process, std::ptr::null(), size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-            if remote.is_null() {
-                return Err(format!("Couldn't reserve memory in the game ({}).", std::io::Error::last_os_error()));
-            }
-            let result = (|| {
-                let mut written = 0usize;
-                if WriteProcessMemory(process, remote, wide.as_ptr().cast(), size, &mut written) == 0 || written != size {
-                    return Err(format!("Couldn't pass the patch path to the game ({}).", std::io::Error::last_os_error()));
-                }
-                let start: unsafe extern "system" fn(*mut core::ffi::c_void) -> u32 = std::mem::transmute(load_library);
-                let thread = CreateRemoteThread(process, std::ptr::null(), 0, Some(start), remote, 0, std::ptr::null_mut());
-                if thread.is_null() {
-                    return Err(format!("Couldn't start the patch in the game ({}).", std::io::Error::last_os_error()));
-                }
-                let waited = WaitForSingleObject(thread, LOAD_TIMEOUT_MS);
-                let mut code = 0u32;
-                let got_code = GetExitCodeThread(thread, &mut code) != 0;
-                CloseHandle(thread);
-                if waited != WAIT_OBJECT_0 {
-                    return Err("The patch took too long to load.".into());
-                }
-                // The thread's exit code is the low half of the module handle
-                // LoadLibraryW returned. Zero means it failed — or, about once
-                // in 65,536 loads, that the patch landed at an address whose
-                // low 32 bits are all zero (a module base is only 64 KB
-                // aligned). The game's module list tells the two apart, rather
-                // than closing a game that loaded its patch fine.
-                let loaded = (got_code && code != 0)
-                    || dll.file_name().is_some_and(|name| has_module(pid, &name.to_string_lossy()));
-                if !loaded {
-                    return Err("Windows refused to load the patch. An antivirus may have blocked it.".into());
-                }
-                Ok(())
-            })();
-            VirtualFreeEx(process, remote, 0, MEM_RELEASE);
-            result
-        }
-    }
+    crate::linux::reap(child);
+    // The helper's Windows PID is not a host PID. Linux's monitor resolves
+    // the actual process from the verified client path and selected prefix.
+    Ok(0)
 }
+
+#[cfg(target_os = "windows")]
+#[path = "stella_inject.rs"]
+mod inject;
 
 #[cfg(test)]
 mod tests {

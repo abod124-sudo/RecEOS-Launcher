@@ -758,6 +758,8 @@ async fn download_client_impl(
         .path()
         .app_data_dir()
         .map_err(|e| e.to_string())?;
+    #[cfg(target_os = "linux")]
+    crate::linux::guard_client_cleanup(&app, Path::new(&client_dir))?;
 
     // Ensure directories exist.
     fs::create_dir_all(&user_data).map_err(|e| e.to_string())?;
@@ -1673,6 +1675,8 @@ async fn uninstall_client_impl(
     let cfg = config::current(&app);
     let client_dir = config::get_client_dir_for(&app, &cfg, network);
 
+    #[cfg(target_os = "linux")]
+    crate::linux::guard_client_cleanup(&app, Path::new(&client_dir))?;
     if Path::new(&client_dir).exists() {
         // Deleting a multi-gigabyte install is seconds of synchronous I/O, so
         // it goes to the blocking pool rather than parking a tokio worker.
@@ -1930,6 +1934,8 @@ fn verify_vanilla_signature(installer: &[u8], signature: &str) -> Result<(), Str
 /// the install — the user clicks through it — and we never pass silent flags.
 #[tauri::command]
 pub async fn install_vanilla_launcher(app: tauri::AppHandle) -> Result<Value, String> {
+    #[cfg(target_os = "linux")]
+    let _ = crate::linux::resolve(&app, Network::Vanilla)?;
     if client_busy() {
         return Err("Wait for the current download or file check to finish first.".into());
     }
@@ -2098,6 +2104,13 @@ pub async fn install_vanilla_launcher(app: tauri::AppHandle) -> Result<Value, St
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     );
+    #[cfg(target_os = "linux")]
+    let temp_dir = {
+        let directory = crate::linux::resolve(&app, Network::Vanilla)?.compat_data;
+        fs::create_dir_all(&directory).map_err(|e| format!("Cannot create Vanilla's Proton directory: {e}"))?;
+        directory
+    };
+    #[cfg(not(target_os = "linux"))]
     let temp_dir = std::env::temp_dir();
     clean_stale_vanilla_msis(&temp_dir);
     let msi_path = temp_dir.join(format!("{}{}.msi", VANILLA_MSI_PREFIX, unique));
@@ -2125,8 +2138,18 @@ pub async fn install_vanilla_launcher(app: tauri::AppHandle) -> Result<Value, St
     }
     #[cfg(not(target_os = "windows"))]
     {
+        #[cfg(target_os = "linux")]
+        {
+            let runtime = crate::linux::resolve(&app, Network::Vanilla)?;
+            let msi = runtime.windows_path(&msi_path)?;
+            let child = runtime.spawn(std::path::Path::new("msiexec.exe"), &["/i".into(), msi], &temp_dir)?;
+            crate::linux::reap(child);
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
         let _ = &msi_path;
         return Err("Installing Vanilla's launcher is only supported on Windows.".into());
+        }
     }
 
     let _ = app.emit("download-progress", json!({ "phase": "done", "pct": 100 }));
@@ -2169,7 +2192,9 @@ pub fn reveal_folder(dir: &Path) {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+        if let Ok(child) = crate::linux::system_command("xdg-open").arg(dir).spawn() {
+            crate::linux::reap(child);
+        }
     }
 }
 

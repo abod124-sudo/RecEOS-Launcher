@@ -12,9 +12,22 @@
 //! * **Start with Windows.** A per-user `Run` registry value — no admin
 //!   rights, and the same value name the NSIS uninstaller already removes.
 //!   It launches with [`BACKGROUND_ARG`], which keeps the window hidden.
+//!
+//! Linux uses a native tray menu and an opt-in XDG autostart desktop entry.
+//! Tray mode is also opt-in there, and a failed tray never strands the window.
 
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static TRAY_AVAILABLE: AtomicBool = AtomicBool::new(false);
+pub fn tray_available() -> bool {
+    if !TRAY_AVAILABLE.load(Ordering::Relaxed) { return false; }
+    #[cfg(target_os = "linux")]
+    { crate::linux::tray_host_available() }
+    #[cfg(not(target_os = "linux"))]
+    { true }
+}
 
 /// Passed by the startup entry: start in the tray, window hidden.
 pub const BACKGROUND_ARG: &str = "--background";
@@ -490,6 +503,7 @@ fn on_menu(app: &AppHandle, id: &str) {
     match id {
         "open" => show_main(app),
         "quit" => app.exit(0),
+        "stop" => { crate::game::kill_game(app.clone()); }
         // Play stays in the tray, like Steam's game entries: the page reveals
         // the window itself if the launch needs the user (a warning, a
         // missing install, the stop confirmation).
@@ -537,6 +551,24 @@ fn on_menu(app: &AppHandle, id: &str) {
 }
 
 pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use tauri::menu::{Menu, MenuItem};
+        let mut items = Vec::new();
+        for (id, label) in [("open", "Open Rec EOS Launcher"), ("play", "Play"), ("stop", "Stop game"),
+            ("network:receos", "Rec EOS"), ("network:radium", "Radium"),
+            ("network:vanilla", "Vanilla"), ("network:stella", "Stella"), ("quit", "Quit")] {
+            items.push(MenuItem::with_id(app, id, label, true, None::<&str>)?);
+        }
+        let menu = Menu::new(app)?;
+        for item in &items { menu.append(item)?; }
+        let mut tray = TrayIconBuilder::with_id("main-tray").tooltip("Rec EOS Launcher")
+            .menu(&menu).on_menu_event(|app, event| on_menu(app, event.id().as_ref()));
+        if let Some(icon) = app.default_window_icon() { tray = tray.icon(icon.clone()); }
+        tray.build(app)?;
+        TRAY_AVAILABLE.store(true, Ordering::Relaxed);
+        return Ok(());
+    }
     let mut tray = TrayIconBuilder::with_id("main-tray")
         .tooltip("Rec EOS Launcher")
         .on_tray_icon_event(|tray, event| match event {
@@ -557,6 +589,7 @@ pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
         }
     }
     tray.build(app)?;
+    TRAY_AVAILABLE.store(true, Ordering::Relaxed);
     // Made now, hidden, so the first right-click doesn't wait for a webview.
     if let Some(win) = tray_menu_window(app) {
         warm_tray_menu(win);
@@ -751,7 +784,7 @@ fn app_icons_for_dpi(dpi: u32) -> Option<(isize, isize)> {
 /// Called for the main window's close request. Returns true when the close
 /// was turned into a hide.
 pub fn hide_instead_of_close(app: &AppHandle) -> bool {
-    if !crate::config::current(app).run_in_background {
+    if !tray_available() || !crate::config::current(app).run_in_background {
         return false;
     }
     hide_main(app);
@@ -760,6 +793,7 @@ pub fn hide_instead_of_close(app: &AppHandle) -> bool {
 
 /// Hide the launcher window to the tray.
 pub fn hide_main(app: &AppHandle) {
+    if !tray_available() { show_main(app); return; }
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.hide();
     }
@@ -786,6 +820,16 @@ pub fn set_autostart(enabled: bool) -> Result<bool, String> {
 }
 
 fn startup_command() -> Result<String, String> {
+    #[cfg(target_os = "linux")]
+    {
+        let exe = std::env::var_os("APPIMAGE").map(std::path::PathBuf::from)
+            .unwrap_or(std::env::current_exe().map_err(|e| e.to_string())?);
+        if !exe.is_absolute() { return Err("The startup executable must be an absolute path.".into()); }
+        let path = exe.to_string_lossy().replace('\\', "\\\\\\\\").replace('"', "\\\\\"")
+            .replace('$', "\\\\$").replace('`', "\\\\`").replace('%', "%%");
+        if path.chars().any(char::is_control) { return Err("Startup path contains control characters.".into()); }
+        return Ok(format!("\"{path}\" {BACKGROUND_ARG}"));
+    }
     let exe = std::env::current_exe().map_err(|e| format!("Couldn't find the launcher's exe: {}", e))?;
     Ok(format!("\"{}\" {}", exe.display(), BACKGROUND_ARG))
 }
@@ -799,6 +843,14 @@ fn startup_command() -> Result<String, String> {
 /// exe under target/.
 pub fn apply_startup_default(app: &AppHandle) {
     if cfg!(debug_assertions) {
+        return;
+    }
+    if cfg!(target_os = "linux") {
+        // Linux startup is opt-in. Refresh a previously opted-in AppImage
+        // path when it moves, but never silently enable it on first launch.
+        if autostart::current().is_some() {
+            if let Ok(command) = startup_command() { let _ = autostart::set(&command); }
+        }
         return;
     }
     let _lock = crate::config::write_lock();
@@ -922,7 +974,7 @@ mod autostart {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 mod autostart {
     pub fn current() -> Option<String> {
         None
@@ -936,6 +988,43 @@ mod autostart {
     pub fn take_legacy() -> bool {
         false
     }
+}
+
+#[cfg(target_os = "linux")]
+mod autostart {
+    use std::path::PathBuf;
+    fn path() -> Result<PathBuf, String> {
+        let config = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).filter(|p| p.is_absolute())
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+            .ok_or("Cannot locate the user configuration directory.")?;
+        Ok(config.join("autostart/com.receos.launcher.desktop"))
+    }
+    pub fn current() -> Option<String> {
+        let text = std::fs::read_to_string(path().ok()?).ok()?;
+        if text.lines().any(|s| s == "Hidden=true" || s == "X-GNOME-Autostart-enabled=false") { return None; }
+        text.lines().find_map(|s| s.strip_prefix("Exec=").map(str::to_string))
+    }
+    pub fn set(command: &str) -> Result<(), String> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let path = path()?;
+        std::fs::create_dir_all(path.parent().ok_or("No autostart directory")?).map_err(|e| e.to_string())?;
+        let temp = path.with_extension(format!("{}.tmp", std::process::id()));
+        let result = (|| {
+            let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temp)?;
+            write!(file, "[Desktop Entry]\nType=Application\nName=Rec EOS Launcher\nExec={command}\nTerminal=false\nX-GNOME-Autostart-enabled=true\n")?;
+            file.sync_all()?;
+            std::fs::rename(&temp, &path)
+        })();
+        if result.is_err() { let _ = std::fs::remove_file(&temp); }
+        result.map_err(|e: std::io::Error| e.to_string())
+    }
+    pub fn remove() -> Result<(), String> {
+        match std::fs::remove_file(path()?) {
+            Ok(()) => Ok(()), Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()), Err(e) => Err(e.to_string()),
+        }
+    }
+    pub fn take_legacy() -> bool { false }
 }
 
 #[cfg(test)]

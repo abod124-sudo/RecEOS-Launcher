@@ -114,7 +114,7 @@ pub async fn check_for_update(app: tauri::AppHandle) -> serde_json::Value {
         assets.iter().find(|asset| {
             if let Some(name) = asset["name"].as_str() {
                 let lower = name.to_lowercase();
-                lower.contains("setup") && lower.ends_with(".exe")
+                cfg!(windows) && lower.contains("setup") && lower.ends_with(".exe")
             } else {
                 false
             }
@@ -341,6 +341,9 @@ pub async fn download_update(
     url: String,
     place_on_desktop: bool,
 ) -> Result<serde_json::Value, String> {
+    if !cfg!(windows) {
+        return Err("Install Linux launcher updates from the release downloads page.".into());
+    }
     // Security check: restrict downloads to trusted official release URLs
     if !is_official_release_asset(&url) {
         return Err("Untrusted update download URL.".into());

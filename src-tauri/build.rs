@@ -31,6 +31,25 @@ fn main() {
     // `stella_api::load_steam_api` loads it ahead of the first Steam call.
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+    if target_os == "linux" {
+        // Deb resources live in /usr/lib/Rec EOS Launcher; AppImage uses the
+        // same layout below AppDir/usr. A dev build uses the adjacent copy.
+        println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN:$ORIGIN/..:$ORIGIN/../lib/Rec EOS Launcher");
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/libsteam_api.so");
+        println!("cargo:rerun-if-changed=resources/libsteam_api.so");
+        if source.is_file() {
+            if let Ok(out) = std::env::var("OUT_DIR") {
+                if let Some(profile) = PathBuf::from(out).ancestors().nth(3) {
+                    std::fs::copy(source, profile.join("libsteam_api.so")).expect("copy Linux Steam library");
+                    let helper = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/receos-proton-helper.exe");
+                    if helper.is_file() {
+                        std::fs::copy(helper, profile.join("receos-proton-helper.exe")).expect("copy Proton helper");
+                    }
+                }
+            }
+        }
+        println!("cargo:rerun-if-changed=resources/receos-proton-helper.exe");
+    }
     if target_os == "windows" && target_env == "msvc" {
         println!("cargo:rustc-link-arg=/DELAYLOAD:steam_api64.dll");
         println!("cargo:rustc-link-arg=delayimp.lib");
