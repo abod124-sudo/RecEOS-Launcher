@@ -212,23 +212,31 @@ fn open_tray_menu(app: &AppHandle, x: f64, y: f64) {
 /// the pointer, which is on the item just picked, by the tray icon. Where the
 /// desktop doesn't tell (a Wayland session), the top-right corner of the
 /// screen, where most Linux desktops keep their tray.
+///
+/// GTK has no primary monitor on Wayland, so the corner comes from the first
+/// monitor there; and the panel opens even when no monitor is reported at all
+/// (the compositor places a Wayland window itself anyway). Returning without
+/// opening it left the menu item doing nothing on Wayland.
 fn open_panel_at_pointer(app: &AppHandle) {
-    let at = app
+    let (x, y) = app
         .cursor_position()
         .ok()
         .filter(|p| p.x.is_finite() && p.y.is_finite() && (p.x, p.y) != (0.0, 0.0))
         .map(|p| (p.x, p.y))
         .or_else(|| {
-            let monitor = app.primary_monitor().ok().flatten()?;
+            let monitor = app
+                .primary_monitor()
+                .ok()
+                .flatten()
+                .or_else(|| app.available_monitors().ok()?.into_iter().next())?;
             let area = monitor.work_area();
             Some((
                 f64::from(area.position.x) + f64::from(area.size.width) - 1.0,
                 f64::from(area.position.y),
             ))
-        });
-    if let Some((x, y)) = at {
-        open_tray_menu(app, x, y);
-    }
+        })
+        .unwrap_or((0.0, 0.0));
+    open_tray_menu(app, x, y);
 }
 
 // ── Painting the panel once, off screen ──────────────────────────────────

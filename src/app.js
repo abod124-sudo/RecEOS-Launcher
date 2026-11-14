@@ -430,6 +430,19 @@ function withoutBackdrop(cfg) {
 
   let unlistenMap = {};
 
+  // Whole-config saves go out one at a time, in the order they were asked
+  // for. Each is a snapshot of the config when it was made, and the backend
+  // runs commands on a thread pool, so two in flight at once could land in
+  // either order: a network switch's snapshot, taken before a toggle was
+  // flipped, overwrote the toggle's newer save (seen on a slow CI runner).
+  let configSaveChain = Promise.resolve();
+  function saveConfigInOrder(cfg) {
+    const payload = withoutBackdrop(cfg);
+    const save = configSaveChain.then(() => invoke('cmd_save_config', { config: payload }));
+    configSaveChain = save.catch(() => {});
+    return save;
+  }
+
   window.radium = {
     // Window controls
     minimize: () => appWindow.minimize(),
@@ -441,7 +454,7 @@ function withoutBackdrop(cfg) {
     // written only through setGlassBackdrop — otherwise each autosave, toggle
     // and play-mode click shipped it over IPC and had it re-parsed.
     getConfig:  ()    => invoke('cmd_get_config'),
-    saveConfig: (cfg) => invoke('cmd_save_config', { config: withoutBackdrop(cfg) }),
+    saveConfig: saveConfigInOrder,
     setGlassBackdrop: (value) => invoke('cmd_set_glass_backdrop', { value: String(value || '') }),
     setHomeBanner: (network, value) => invoke('cmd_set_home_banner', { network: String(network || ''), value: String(value || '') }),
     // The picture at a typed address, as an ArrayBuffer. The CSP lets the
