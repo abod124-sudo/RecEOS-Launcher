@@ -424,6 +424,28 @@ def main():
             wait(lambda: driver.js("return $('protonStatus').dataset.state === 'ready' && !$('protonVideoHint').hidden"), "GE-Proton hint for Valve's Proton")
             assert "Flatpak" in driver.js("return $('protonSteamNote').textContent")
             driver.screenshot(args.output / "proton-flatpak.png")
+            # The real one-click install (a ~570 MB download), in one run of
+            # one job only: the pinned release, checksum, unpacking, and
+            # Automatic switching to it. Its runtime (4183110) is the fixture's.
+            if os.environ.get("RECEOS_TEST_GE_INSTALL") == "1" and args.application.name == "rec-eos-launcher" and os.environ.get("GDK_BACKEND") == "x11":
+                shutil.rmtree(flatpak_steam / "compatibilitytools.d/GE-Proton10-25")
+                config["linux"] = {"steamDir": "", "networks": {}}
+                assert driver.invoke("cmd_save_config", {"config": config})
+                driver.click("#protonCheck")
+                wait(lambda: driver.js("return $('protonStatus').dataset.state === 'ready' && !$('protonVideoHint').hidden"), "GE-Proton offered with only Valve's Proton")
+                driver.click("#protonInstallGe")
+                wait(lambda: driver.js("return $('protonGeDesc').textContent.includes('Downloading GE-Proton')"), "GE-Proton download progress")
+                wait(lambda: driver.js("return !geInstalling && $('protonStatus').dataset.state === 'ready'"), "GE-Proton install", timeout=900)
+                installed = flatpak_steam / "compatibilitytools.d/GE-Proton11-12"
+                assert (installed / "proton").is_file() and (installed / "toolmanifest.vdf").is_file()
+                assert not list((flatpak_steam / "compatibilitytools.d").glob(".receos-*")), "download leftovers"
+                status = driver.invoke("get_linux_runtime_status", {"network": "receos"})
+                assert status["ready"] and status["protonName"] == "GE-Proton11-12" and status["videoCodecs"] is True, status
+                assert driver.js("return $('protonVideoHint').hidden")
+                # Installing again is a no-op, not a second download.
+                assert driver.invoke("install_ge_proton") == "GE-Proton11-12"
+                driver.screenshot(args.output / "proton-ge-installed.png")
+                record("Install GE-Proton downloads the pinned release and Automatic uses it")
         finally:
             shutil.rmtree(flatpak_home, ignore_errors=True)
             config = driver.invoke("cmd_get_config")

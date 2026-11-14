@@ -7,6 +7,7 @@ pub mod desktop_notify;
 pub mod download;
 pub mod frost;
 pub mod game;
+pub mod ge_proton;
 pub mod linux;
 pub mod migrate;
 pub mod receos;
@@ -96,6 +97,7 @@ pub fn run() {
             linux::pick_linux_directory,
             linux::open_linux_url,
             linux::open_proton_prefix,
+            ge_proton::install_ge_proton,
             cmd_set_glass_backdrop,
             cmd_fetch_glass_backdrop,
             cmd_set_home_banner,

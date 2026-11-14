@@ -557,6 +557,11 @@ function withoutBackdrop(cfg) {
     getLinuxRuntimeStatus: (network = activeNetwork) => invoke('get_linux_runtime_status', { network }),
     pickLinuxDirectory: () => invoke('pick_linux_directory'),
     openProtonPrefix: (network) => invoke('open_proton_prefix', { network }),
+    installGeProton: () => invoke('install_ge_proton'),
+    onGeProtonProgress: async (cb) => {
+      if (unlistenMap['ge-proton-progress']) unlistenMap['ge-proton-progress']();
+      unlistenMap['ge-proton-progress'] = await listen('ge-proton-progress', (event) => cb(event.payload));
+    },
     receosWeekly: () => invoke('receos_weekly'),
     receosRoomPlayers: (roomId) => invoke('receos_room_players', { roomId }),
 
@@ -2061,6 +2066,8 @@ function fillProtonVersions(status, selectedDir) {
 }
 
 let protonRefreshSeq = 0;
+// Set while Install GE-Proton runs (see the button below).
+let geInstalling = false;
 async function refreshProtonPage() {
   if (!platformCapabilities.linux) return;
   const seq = ++protonRefreshSeq;
@@ -2097,7 +2104,13 @@ async function refreshProtonPage() {
   } else {
     setProtonStatus('error', 'Not ready', status.error || 'Steam or Proton could not be found.');
   }
-  $('protonVideoHint').hidden = !(status.ready && status.videoCodecs === false);
+  // Shown while installing too, so its progress stays on screen.
+  $('protonVideoHint').hidden = !geInstalling && !(status.ready && status.videoCodecs === false);
+  // A missing Steam Linux Runtime (GE-Proton uses a newer one than Valve's
+  // Proton) installs from Steam itself.
+  const runtimeApp = !status.ready && /Steam Linux Runtime \(app (\d+)\)/.exec(status.error || '');
+  $('protonRuntimeInstall').hidden = !runtimeApp;
+  $('protonRuntimeInstall').dataset.app = runtimeApp ? runtimeApp[1] : '';
 }
 
 /// Saves one change to config.linux, then checks the result again.
@@ -2131,8 +2144,38 @@ async function pickProtonFolder() {
 }
 
 $('protonNetwork')?.addEventListener('change', refreshProtonPage);
-$('protonGetGe')?.addEventListener('click', () =>
-  window.radium?.openUrl('https://github.com/GloriousEggroll/proton-ge-custom#installation'));
+const GE_DESC = 'Valve\'s Proton can\'t play the game\'s videos, like the loading banner. GE-Proton can. Installing it downloads about 570 MB from GitHub, and Automatic then uses it.';
+window.radium?.onGeProtonProgress?.((p) => {
+  if (!geInstalling) return;
+  const mb = (n) => Math.round((n || 0) / 1048576);
+  $('protonGeDesc').textContent = p.phase === 'download'
+    ? `Downloading GE-Proton... ${mb(p.downloaded)} of ${mb(p.total)} MB`
+    : p.phase === 'unpack' ? 'Unpacking GE-Proton...' : 'GE-Proton installed.';
+});
+$('protonInstallGe')?.addEventListener('click', async () => {
+  if (geInstalling) return;
+  geInstalling = true;
+  const button = $('protonInstallGe');
+  button.disabled = true;
+  $('protonGeDesc').textContent = 'Starting the download...';
+  try {
+    const name = await window.radium.installGeProton();
+    addLog(`Installed ${name} for Proton.`, 'ok');
+    toast(`${name} installed. Automatic uses it now.`, 'ok', 5000);
+  } catch (error) {
+    addLog(`GE-Proton not installed: ${error}`, 'error');
+    toast(String(error), 'error', 7000);
+  } finally {
+    geInstalling = false;
+    button.disabled = false;
+    $('protonGeDesc').textContent = GE_DESC;
+    await refreshProtonPage();
+  }
+});
+$('protonRuntimeInstall')?.addEventListener('click', () => {
+  const app = $('protonRuntimeInstall').dataset.app;
+  if (/^\d+$/.test(app || '')) window.radium?.openUrl(`steam://install/${app}`);
+});
 $('protonCheck')?.addEventListener('click', refreshProtonPage);
 $('protonVersion')?.addEventListener('change', async () => {
   const select = $('protonVersion');

@@ -1383,6 +1383,7 @@
                     <span class="sg-label" id="protonStatusTitle">Checking...</span>
                     <span class="sg-desc" id="protonStatusDetail"></span>
                   </span>
+                  <button type="button" class="btn-open-folder" id="protonRuntimeInstall" hidden>Install in Steam</button>
                   <button type="button" class="btn-open-folder" id="protonCheck">Check again</button>
                 </div>
                 <div class="sg-row">
@@ -1402,10 +1403,10 @@
                 <div class="sg-row" id="protonVideoHint" hidden>
                   <span class="sg-text">
                     <span class="sg-label">Videos show colour bars?</span>
-                    <span class="sg-desc">Valve's Proton can't play the game's videos, like the loading banner. GE-Proton can: install it (for example with ProtonUp-Qt) and Automatic uses it. If this page then asks for a Steam Linux Runtime, install that in Steam too.</span>
+                    <span class="sg-desc" id="protonGeDesc">Valve's Proton can't play the game's videos, like the loading banner. GE-Proton can. Installing it downloads about 570 MB from GitHub, and Automatic then uses it.</span>
                   </span>
                   <div class="sg-control">
-                    <button type="button" class="btn-open-folder" id="protonGetGe">Get GE-Proton</button>
+                    <button type="button" class="btn-open-folder" id="protonInstallGe">Install GE-Proton</button>
                   </div>
                 </div>
                 <div class="sg-toggle-row">

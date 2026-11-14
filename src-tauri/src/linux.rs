@@ -385,6 +385,11 @@ fn compat_data_dir(app: &tauri::AppHandle, network: Network) -> Result<PathBuf, 
     resolved_path(&path)
 }
 
+/// The Steam folder Settings › Proton uses (chosen, or found).
+pub fn steam_folder(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    steam_dir(&config::current(app).linux)
+}
+
 fn steam_dir(settings: &LinuxSettings) -> Result<PathBuf, String> {
     steam_dir_in(settings, &home_dir())
 }

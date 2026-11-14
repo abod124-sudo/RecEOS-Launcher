@@ -65,10 +65,11 @@ Vulkan driver, or turn on **OpenGL mode** in Settings › Proton.
 
 **Videos (like Rec EOS's loading banner) show TV colour bars.** Valve's
 Proton can't play H.264 video, so it shows that test pattern in its place.
-Install [GE-Proton](https://github.com/GloriousEggroll/proton-ge-custom#installation)
-(for example with ProtonUp-Qt) and leave Proton version on Automatic. If
-Settings › Proton then asks for a Steam Linux Runtime (GE-Proton uses a newer
-one than Valve's Proton), install it in Steam.
+Press **Install GE-Proton** in Settings › Proton (about 570 MB from GitHub,
+checked against a pinned checksum; it goes in Steam's
+`compatibilitytools.d`), and leave Proton version on Automatic. If the page
+then asks for a Steam Linux Runtime (GE-Proton uses a newer one than Valve's
+Proton), press **Install in Steam**.
 
 **Flatpak Steam.** Games start inside Flatpak Steam's sandbox (`flatpak run`),
 where they can reach the Steam client. Only the game's folder and its Proton
