@@ -140,3 +140,42 @@ jobs:
         with:
           name: desktop-results-${{ strategy.job-index }}
           path: /tmp/receos-desktop-results
+
+  # Arch can't install the .deb, so only the AppImage is checked there: the
+  # same X11, Wayland and no-tray-host runs, on Arch's newer libraries.
+  linux-desktop-arch:
+    needs: linux
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    container:
+      image: archlinux:latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install desktop test dependencies
+        timeout-minutes: 10
+        run: |
+          pacman -Syu --noconfirm --needed git ca-certificates python python-dbus python-gobject webkit2gtk-4.1 gtk3 libayatana-appindicator libnotify xdg-utils xorg-server-xvfb xorg-xauth dunst openssl weston xorg-xwayland mesa desktop-file-utils gst-plugins-base gst-plugins-good pulseaudio
+          if ! getent passwd 1000 >/dev/null 2>&1; then useradd --create-home --uid 1000 validation; fi
+      - uses: actions/download-artifact@v8
+        with:
+          name: linux-x64-gameplay-validation-pending
+          path: src-tauri/target/linux-validation/account-free/release-ubuntu22
+      - uses: actions/download-artifact@v8
+        with:
+          name: linux-desktop-driver
+          path: src-tauri/target/linux-validation/account-free
+      - name: Install the AppImage
+        shell: bash
+        run: |
+          image=$(find src-tauri/target/linux-validation/account-free/release-ubuntu22 -name '*.AppImage' -print -quit)
+          bash tests/linux/install-packages.sh '' "$image"
+      - name: X11 and Wayland desktop integration
+        shell: bash
+        run: |
+          user=$(getent passwd 1000 | cut -d: -f1)
+          runuser -u "$user" -- env HOME=/tmp/receos-test-home RECEOS_FORMATS=appimage bash tests/linux/run-desktop-matrix.sh /tmp/receos-desktop-results
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: desktop-results-arch
+          path: /tmp/receos-desktop-results
