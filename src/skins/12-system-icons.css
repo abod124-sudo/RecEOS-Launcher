@@ -25,6 +25,8 @@ body:is(.theme-winxp, .theme-royalenoir, .theme-steam-green) {
   --ico-notifications: image-set(url("../assets/icons/xp/notifications-16.png") 1x, url("../assets/icons/xp/notifications-32.png") 2x);
   --ico-friends: image-set(url("../assets/icons/xp/friends-16.png") 1x, url("../assets/icons/xp/friends-32.png") 2x);
   --ico-about: image-set(url("../assets/icons/xp/about-16.png") 1x, url("../assets/icons/xp/about-32.png") 2x);
+  --ico-proton: image-set(url("../assets/icons/xp/launch-32.png") 2x);
+  --ico-vanilla: image-set(url("../assets/icons/xp/client-32.png") 2x);
 }
 
 body:is(.theme-win95, .theme-win98) {
@@ -38,6 +40,8 @@ body:is(.theme-win95, .theme-win98) {
   --ico-notifications: image-set(url("../assets/icons/win9x/notifications-16.png") 1x, url("../assets/icons/win9x/notifications-32.png") 2x);
   --ico-friends: image-set(url("../assets/icons/win9x/friends-16.png") 1x, url("../assets/icons/win9x/friends-32.png") 2x);
   --ico-about: image-set(url("../assets/icons/win9x/about-16.png") 1x, url("../assets/icons/win9x/about-32.png") 2x);
+  --ico-proton: image-set(url("../assets/icons/win9x/launch-32.png") 2x);
+  --ico-vanilla: image-set(url("../assets/icons/win9x/client-32.png") 2x);
 }
 
 body:is(.theme-winvista) {
@@ -51,6 +55,8 @@ body:is(.theme-winvista) {
   --ico-notifications: image-set(url("../assets/icons/vista/notifications-16.png") 1x, url("../assets/icons/vista/notifications-32.png") 2x);
   --ico-friends: image-set(url("../assets/icons/vista/friends-16.png") 1x, url("../assets/icons/vista/friends-32.png") 2x);
   --ico-about: image-set(url("../assets/icons/vista/about-16.png") 1x, url("../assets/icons/vista/about-32.png") 2x);
+  --ico-proton: image-set(url("../assets/icons/vista/launch-32.png") 2x);
+  --ico-vanilla: image-set(url("../assets/icons/vista/client-32.png") 2x);
 }
 
 body:is(.theme-win7, .theme-steam2010) {
@@ -64,6 +70,8 @@ body:is(.theme-win7, .theme-steam2010) {
   --ico-notifications: image-set(url("../assets/icons/win7/notifications-16.png") 1x, url("../assets/icons/win7/notifications-32.png") 2x);
   --ico-friends: image-set(url("../assets/icons/win7/friends-16.png") 1x, url("../assets/icons/win7/friends-32.png") 2x);
   --ico-about: image-set(url("../assets/icons/win7/about-16.png") 1x, url("../assets/icons/win7/about-32.png") 2x);
+  --ico-proton: image-set(url("../assets/icons/win7/launch-32.png") 2x);
+  --ico-vanilla: image-set(url("../assets/icons/win7/client-32.png") 2x);
 }
 
 body:is(.theme-macosclassic) {
@@ -77,6 +85,8 @@ body:is(.theme-macosclassic) {
   --ico-notifications: image-set(url("../assets/icons/mac9/notifications-16.png") 1x, url("../assets/icons/mac9/notifications-32.png") 2x);
   --ico-friends: image-set(url("../assets/icons/mac9/friends-16.png") 1x, url("../assets/icons/mac9/friends-32.png") 2x);
   --ico-about: image-set(url("../assets/icons/mac9/about-16.png") 1x, url("../assets/icons/mac9/about-32.png") 2x);
+  --ico-proton: image-set(url("../assets/icons/mac9/launch-32.png") 2x);
+  --ico-vanilla: image-set(url("../assets/icons/mac9/client-32.png") 2x);
 }
 
 body:is(.theme-macosaqua) {
@@ -90,6 +100,8 @@ body:is(.theme-macosaqua) {
   --ico-notifications: image-set(url("../assets/icons/aqua/notifications-16.png") 1x, url("../assets/icons/aqua/notifications-32.png") 2x);
   --ico-friends: image-set(url("../assets/icons/aqua/friends-16.png") 1x, url("../assets/icons/aqua/friends-32.png") 2x);
   --ico-about: image-set(url("../assets/icons/aqua/about-16.png") 1x, url("../assets/icons/aqua/about-32.png") 2x);
+  --ico-proton: image-set(url("../assets/icons/aqua/launch-32.png") 2x);
+  --ico-vanilla: image-set(url("../assets/icons/aqua/client-32.png") 2x);
 }
 
 body:is(.theme-winxp, .theme-royalenoir, .theme-win95, .theme-win98,
@@ -118,6 +130,10 @@ body:is(.theme-winxp, .theme-royalenoir, .theme-win95, .theme-win98,
   & .settings-nav-btn[data-section="home"]          { --ico: var(--ico-home); }
   & .settings-nav-btn[data-section="appearance"]    { --ico: var(--ico-appearance); }
   & .settings-nav-btn[data-section="folders"]       { --ico: var(--ico-folders); }
+  /* No 16px Proton or Vanilla icon in the sets: the 32px Run (a Windows
+     program, which is what Proton runs) and client icons, drawn at 16px. */
+  & .settings-nav-btn[data-section="proton"]        { --ico: var(--ico-proton); }
+  & .settings-nav-btn[data-section="vanilla"]       { --ico: var(--ico-vanilla); }
   & .settings-nav-btn[data-section="notifications"] { --ico: var(--ico-notifications); }
   & .settings-nav-btn[data-section="friends"]       { --ico: var(--ico-friends); }
   & .settings-nav-btn[data-section="about"]         { --ico: var(--ico-about); }
