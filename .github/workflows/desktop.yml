@@ -169,6 +169,13 @@ jobs:
         run: |
           image=$(find src-tauri/target/linux-validation/account-free/release-ubuntu22 -name '*.AppImage' -print -quit)
           bash tests/linux/install-packages.sh '' "$image"
+      - name: Diagnose the AppImage EGL abort (temporary)
+        continue-on-error: true
+        shell: bash
+        run: |
+          deb=$(realpath "$(find src-tauri/target/linux-validation/account-free/release-ubuntu22 -name '*.deb' -print -quit)")
+          user=$(getent passwd 1000 | cut -d: -f1)
+          runuser -u "$user" -- env HOME=/tmp/receos-diagnose-home bash tests/linux/arch-egl-diagnose.sh "$deb"
       - name: X11 and Wayland desktop integration
         shell: bash
         run: |
