@@ -71,7 +71,7 @@ jobs:
         run: |
           sudo bash scripts/configure-ci-apt.sh
           sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o APT::Update::Error-Mode=any update
-          sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf libfuse2 squashfs-tools libnotify-bin xdg-utils xvfb gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf libfuse2 squashfs-tools webkit2gtk-driver libnotify-bin xdg-utils xvfb gstreamer1.0-plugins-base gstreamer1.0-plugins-good
       - run: npm ci
       - uses: actions/download-artifact@v8
         with:
@@ -83,11 +83,17 @@ jobs:
       - name: Package layouts, linking and headless frontend startup
         run: bash scripts/smoke-linux.sh src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
       - name: Prepare desktop test driver
-        run: cargo install tauri-driver --version 2.1.0 --locked --root /tmp/receos-driver
+        run: |
+          cargo install tauri-driver --version 2.1.0 --locked --root /tmp/receos-driver
+          # The WebKitWebDriver matching the WebKit the AppImage bundles, for
+          # distros whose own driver speaks a newer automation protocol (Arch).
+          cp "$(command -v WebKitWebDriver)" /tmp/receos-driver/bin/WebKitWebDriver
       - uses: actions/upload-artifact@v7
         with:
           name: linux-desktop-driver
-          path: /tmp/receos-driver/bin/tauri-driver
+          path: |
+            /tmp/receos-driver/bin/tauri-driver
+            /tmp/receos-driver/bin/WebKitWebDriver
       - uses: actions/upload-artifact@v7
         with:
           name: linux-x64-gameplay-validation-pending
@@ -155,7 +161,7 @@ jobs:
       - name: Install desktop test dependencies
         timeout-minutes: 10
         run: |
-          pacman -Syu --noconfirm --needed git ca-certificates python python-dbus python-gobject webkit2gtk-4.1 webkitgtk-6.0 gtk3 libayatana-appindicator libnotify xdg-utils xorg-server-xvfb xorg-xauth dunst openssl weston xorg-xwayland mesa desktop-file-utils gst-plugins-base gst-plugins-good pulseaudio
+          pacman -Syu --noconfirm --needed git ca-certificates python python-dbus python-gobject webkit2gtk-4.1 gtk3 libayatana-appindicator libnotify xdg-utils xorg-server-xvfb xorg-xauth dunst openssl weston xorg-xwayland mesa desktop-file-utils gst-plugins-base gst-plugins-good pulseaudio
           if ! getent passwd 1000 >/dev/null 2>&1; then useradd --create-home --uid 1000 validation; fi
       - uses: actions/download-artifact@v8
         with:
@@ -170,16 +176,34 @@ jobs:
         run: |
           image=$(find src-tauri/target/linux-validation/account-free/release-ubuntu22 -name '*.AppImage' -print -quit)
           bash tests/linux/install-packages.sh '' "$image"
+      - name: AppImage starts and its frontend runs
+        shell: bash
+        run: |
+          # Needs no WebDriver: the frontend writes this log line only after
+          # its config IPC succeeded, as in scripts/smoke-linux.sh.
+          user=$(getent passwd 1000 | cut -d: -f1)
+          runuser -u "$user" -- bash -c '
+            set -u; scratch=$(mktemp -d)
+            export XDG_CONFIG_HOME=$scratch/config XDG_DATA_HOME=$scratch/data XDG_CACHE_HOME=$scratch/cache
+            export WEBKIT_DISABLE_COMPOSITING_MODE=1 GDK_BACKEND=x11
+            xvfb-run -a dbus-run-session -- timeout --kill-after=5s 20s /tools/receos-appimage > $scratch/run.log 2>&1
+            result=$?; cat $scratch/run.log
+            test $result = 124 || { echo "exited early ($result)"; exit 1; }
+            ! grep -E "panicked at|error while loading shared libraries|EGL_BAD_PARAMETER" $scratch/run.log || exit 1
+            grep -R -F "Launcher version:" $XDG_DATA_HOME'
       - name: X11 and Wayland desktop integration
         shell: bash
         run: |
-          # Arch's webkit2gtk-4.1 has no WebKitWebDriver; webkitgtk-6.0 carries
-          # it (it drives any WebKitGTK app). Hand tauri-driver its path.
-          native=$(command -v WebKitWebDriver || pacman -Qlq webkitgtk-6.0 webkit2gtk-4.1 | grep '/WebKitWebDriver$' | head -1)
-          test -x "$native"
-          echo "WebKitWebDriver: $native"
+          # Arch's own WebKitWebDriver is newer than the WebKit inside the
+          # AppImage and speaks a protocol it lacks. Use the build machine's,
+          # loading the AppImage's own WebKit libraries.
+          install -m 755 src-tauri/target/linux-validation/account-free/WebKitWebDriver /tools/bin/WebKitWebDriver
+          printf '%s\n' '#!/bin/sh' 'export LD_LIBRARY_PATH=/opt/receos-validation/squashfs-root/usr/lib' 'exec /tools/bin/WebKitWebDriver "$@"' > /tools/bin/appimage-webdriver
+          chmod 755 /tools/bin/appimage-webdriver
+          LD_LIBRARY_PATH=/opt/receos-validation/squashfs-root/usr/lib ldd /tools/bin/WebKitWebDriver
+          if LD_LIBRARY_PATH=/opt/receos-validation/squashfs-root/usr/lib ldd /tools/bin/WebKitWebDriver | grep -F 'not found'; then exit 1; fi
           user=$(getent passwd 1000 | cut -d: -f1)
-          runuser -u "$user" -- env HOME=/tmp/receos-test-home RECEOS_FORMATS=appimage RECEOS_NATIVE_DRIVER="$native" bash tests/linux/run-desktop-matrix.sh /tmp/receos-desktop-results
+          runuser -u "$user" -- env HOME=/tmp/receos-test-home RECEOS_FORMATS=appimage RECEOS_NATIVE_DRIVER=/tools/bin/appimage-webdriver bash tests/linux/run-desktop-matrix.sh /tmp/receos-desktop-results
       - uses: actions/upload-artifact@v7
         if: always()
         with:
