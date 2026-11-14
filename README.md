@@ -28,9 +28,9 @@ An **unofficial** launcher for Rec Room revival servers.
 | :---: | :---: |
 | ![Chats tab](docs/screenshots/chats.png) | ![Notifications](docs/screenshots/notifications.png) |
 
-| Four networks in one launcher | Tray menu |
+| Four revivals in one launcher | Tray menu |
 | :---: | :---: |
-| ![Network switcher](docs/screenshots/network-switcher.png) | <img src="docs/screenshots/tray-menu.png" alt="Tray menu" width="230"> |
+| ![Revival switcher](docs/screenshots/network-switcher.png) | <img src="docs/screenshots/tray-menu.png" alt="Tray menu" width="230"> |
 
 ---
 
@@ -47,11 +47,11 @@ An **unofficial** launcher for Rec Room revival servers.
 - **Stella** — Signs in with your Steam account: friends with live presence, JOIN,
   invites and notifications, and keeps Stella's patch up to date.
 - **Notifications** — Invites, friend requests and new chat messages show in each
-  network's bell and as desktop pop-ups (held back while the game is running, so a
+  revival's bell and as desktop pop-ups (held back while the game is running, so a
   full-screen game isn't interrupted).
 - **Tray menu** — Right-click the tray icon for a skinned panel: PLAY, download
   progress, Screen / VR, your friends with JOIN, your Rec EOS chats, the pages, and
-  the network switcher.
+  the revival switcher.
 - **Browse** — Rooms with search, tag filters and sorting; player profiles with photos
   and rooms; and a live feed of what players are doing right now.
 - **Client management** — Downloads and extracts the game client in-app with live speed
@@ -74,10 +74,8 @@ An **unofficial** launcher for Rec Room revival servers.
 current build from the [Releases page](https://github.com/abod124-sudo/RecEOS-Launcher/releases/latest).
 It's an installer for Windows x64.
 
-Native Linux support is being added for Ubuntu 22.04+ and Debian 12+ x64,
-with `.deb` and AppImage builds and Proton game launching. **Linux gameplay
-validation is pending.** See [Linux setup, builds and validation](docs/linux.md)
-for requirements, the Vanilla launcher handoff, and the release test matrix.
+Linux (Ubuntu 22.04+, Debian 12+, x64) is new: `.deb` and AppImage builds that run
+the games through Proton. See [Linux](docs/linux.md) for setup and what is confirmed so far.
 
 Already on Radium Launcher? The installer moves it over and keeps your settings and game
 files: the app goes from `%LOCALAPPDATA%\Radium Launcher` to `%LOCALAPPDATA%\Rec EOS Launcher`

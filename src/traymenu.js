@@ -323,7 +323,7 @@
   }
 
   function networks(network) {
-    return seg({ class: 'seg-networks', 'aria-label': 'Network', 'data-key': 'networks' },
+    return seg({ class: 'seg-networks', 'aria-label': 'Revival', 'data-key': 'networks' },
       NETWORKS.map((n) => ({
         id: `network:${n.id}`,
         content: [h('img', { class: 'seg-logo', src: n.logo, alt: '', draggable: 'false' }), n.label],

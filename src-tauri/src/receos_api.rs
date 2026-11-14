@@ -25,19 +25,21 @@ const MAX_PAGES: i64 = 6;
 /// Largest answer read. A page is a few dozen rows.
 const MAX_BYTES: usize = 2 * 1024 * 1024;
 
+/// HTTPS only, except in a debug build pointed at a local test server
+/// (`RECEOS_API_ROOT`, see `receos_social::api_root`).
 fn http() -> reqwest::Client {
-    reqwest::Client::builder()
-        .https_only(true)
+    let b = reqwest::Client::builder()
         .user_agent(USER_AGENT)
         .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(20))
-        .build()
-        .unwrap_or_default()
+        .timeout(Duration::from_secs(20));
+    #[cfg(not(debug_assertions))]
+    let b = b.https_only(true);
+    b.build().unwrap_or_default()
 }
 
 async fn get_json(path_and_query: &str) -> Result<Value, String> {
     let res = http()
-        .get(format!("{API_ROOT}{path_and_query}"))
+        .get(format!("{}{path_and_query}", crate::receos_social::api_root()))
         .send()
         .await
         .map_err(|e| format!("Couldn't reach Rec EOS: {e}"))?;
@@ -140,7 +142,10 @@ fn room_row(r: &Value) -> Value {
         "CheerCount": n(r, "cheers"),
         "FavoriteCount": r["favorites"].as_i64(),
         "VisitCount": n(r, "visits"),
-        "ActivePlayerCount": 0,
+        // Players in the room now (the server counts them from its join
+        // tickets); null from a server that doesn't say, which shows no badge.
+        "ActivePlayerCount": n(r, "players"),
+        "LivePlayers": r.get("players").and_then(Value::as_i64).map_or(Value::Null, Value::from),
         "MaxPlayers": r.get("capacity").cloned().unwrap_or(Value::Null),
         "CreatedAt": s(r, "created_at"),
         "Tags": tags_of(r),
@@ -189,7 +194,8 @@ fn photo_row(p: &Value) -> Value {
 
 // ─── Rooms ──────────────────────────────────────────────────────────────────
 
-/// Rooms, newest first for sort 1, otherwise most cheered. A tag is searched
+/// Rooms, newest first for sort 1, busiest first for sort 5 (Most players),
+/// otherwise most cheered. A tag is searched
 /// for like text (the API's search covers names, descriptions and tags) and
 /// then checked against each room's tags.
 pub async fn fetch_rooms(skip: i64, take: i64, query: &str, tag: &str, sort_by: i64) -> Value {
@@ -197,8 +203,10 @@ pub async fn fetch_rooms(skip: i64, take: i64, query: &str, tag: &str, sort_by: 
     let tag = tag.trim().to_lowercase();
     let q = if query.is_empty() { tag.as_str() } else { query };
     let mut params = format!("q={}", enc(q));
-    if sort_by == 1 {
-        params.push_str("&sort=new");
+    match sort_by {
+        1 => params.push_str("&sort=new"),
+        5 => params.push_str("&sort=players"),
+        _ => {}
     }
     if tag.is_empty() || query.is_empty() {
         return match paged("/web/community/rooms", &params, skip, take, ROOMS_PAGE).await {
@@ -265,6 +273,20 @@ pub async fn room_web_details(name: &str) -> Value {
         Ok(None) => json!({ "success": false, "error": "Room not found." }),
         Err(e) => json!({ "success": false, "error": e }),
     }
+}
+
+/// Players in one room now, for the room's page (a list row may be minutes
+/// old). `players` is null when the server doesn't count them.
+pub async fn room_players(room_id: i64) -> Value {
+    match get_json(&format!("/web/community/rooms/{room_id}")).await {
+        Ok(r) => json!({ "players": r.get("players").and_then(Value::as_i64) }),
+        Err(_) => json!({ "players": null }),
+    }
+}
+
+/// This week's challenges for someone not signed in (`completed` null).
+pub async fn weekly() -> Result<Value, String> {
+    get_json("/web/community/weekly").await
 }
 
 pub async fn fetch_user_rooms(username: &str, skip: i64, take: i64) -> Value {
@@ -443,6 +465,12 @@ mod tests {
         assert_eq!(row["CreatorUsername"], "tavindagoat");
         assert_eq!(row["Tags"], json!(["pvp", "art"]));
         assert_eq!(row["CreatorAvatarUrl"], "");
+        // An older server says nothing about players: no badge, not "0".
+        assert_eq!(row["LivePlayers"], Value::Null);
+        let mut busy = r.clone();
+        busy["players"] = json!(4);
+        assert_eq!(room_row(&busy)["LivePlayers"], 4);
+        assert_eq!(room_row(&busy)["ActivePlayerCount"], 4);
     }
 
     #[test]

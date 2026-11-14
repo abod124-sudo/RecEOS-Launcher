@@ -57,6 +57,9 @@ p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
 gio = "0.18"
+# The tray panel's pointer grab (background.rs, grab_pointer_for_panel). Already
+# in Tauri's own Linux dependency tree.
+gtk = "0.18"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [

@@ -139,7 +139,7 @@ pub(crate) fn no_public_api() -> Value {
     json!({
         "success": false,
         "unsupported": true,
-        "error": "This network does not publish this."
+        "error": "This revival does not publish this."
     })
 }
 

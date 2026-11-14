@@ -95,6 +95,7 @@ pub fn run() {
             linux::get_linux_runtime_status,
             linux::pick_linux_directory,
             linux::open_linux_url,
+            linux::open_proton_prefix,
             cmd_set_glass_backdrop,
             cmd_fetch_glass_backdrop,
             cmd_set_home_banner,
@@ -197,6 +198,8 @@ pub fn run() {
             receos_social::receos_chat_read,
             receos_social::receos_room_interaction,
             receos_social::receos_set_room_interaction,
+            receos_social::receos_room_players,
+            receos_social::receos_weekly,
             // Stella account
             stella_api::stella_auth_status,
             stella_api::stella_login,

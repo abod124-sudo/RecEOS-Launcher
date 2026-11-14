@@ -2161,6 +2161,46 @@ mod tests {
         std::fs::remove_dir_all(data).unwrap();
     }
 
+    /// The Windows-path tests above, with Unix paths: the same folder rules
+    /// hold on Linux, only without case or separator folding.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_folder_rules_match_windows() {
+        let data = temp_app_data("linux-rules");
+        let games = data.join("Games");
+        std::fs::create_dir_all(&games).unwrap();
+        let s = |p: &std::path::Path| p.to_string_lossy().to_string();
+
+        // A custom location gets the network's subfolder, unless it is
+        // already named for that network.
+        let mut cfg = Config::default();
+        cfg.stella.install_dir = s(&games);
+        assert_eq!(client_dir_for(&cfg, Network::Stella, &data), s(&games.join("Stella")));
+        cfg.stella.install_dir = s(&games.join("stella"));
+        assert_eq!(client_dir_for(&cfg, Network::Stella, &data), s(&games.join("stella")));
+
+        // A saved default folder is that folder, not a subfolder of it.
+        let mut cfg = Config::default();
+        cfg.install_dir = s(&data.join("client"));
+        assert_eq!(client_dir_for(&cfg, Network::Radium, &data), s(&data.join("client")));
+
+        // A folder inside another network's default is split apart.
+        let mut cfg = Config::default();
+        cfg.install_dir = s(&data.join("client-vanilla"));
+        assert!(dedupe_install_dirs_at(&mut cfg, &data));
+        assert_eq!(cfg.install_dir, "");
+        let mut cfg = Config::default();
+        cfg.vanilla.install_dir = s(&data.join("client/vanilla"));
+        assert!(dedupe_install_dirs_at(&mut cfg, &data));
+        assert_eq!(cfg.vanilla.install_dir, "");
+
+        // A sibling sharing a name prefix is not inside.
+        assert!(!path_is_inside_dir(&s(&data.join("client2/RecRoom.exe")), &s(&data.join("client"))));
+        assert!(path_is_inside_dir(&s(&data.join("client/RecRoom.exe")), &s(&data.join("client"))));
+
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
     #[test]
     fn radium_pointed_at_the_vanilla_folder_is_reset_to_its_own() {
         let data = PathBuf::from("C:/data");

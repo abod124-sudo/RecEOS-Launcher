@@ -1,7 +1,7 @@
 {
   "name": "rec-eos-launcher",
   "version": "4.0.0",
-  "description": "Rec EOS Launcher \u00e2\u20ac\u201d Rec Room revival launcher",
+  "description": "Rec EOS Launcher — Rec Room revival launcher",
   "private": true,
   "scripts": {
     "dev": "node scripts/build.mjs --dev",

@@ -2142,13 +2142,17 @@ pub async fn install_vanilla_launcher(app: tauri::AppHandle) -> Result<Value, St
         {
             let runtime = crate::linux::resolve(&app, Network::Vanilla)?;
             let msi = runtime.windows_path(&msi_path)?;
-            let child = runtime.spawn(std::path::Path::new("msiexec.exe"), &["/i".into(), msi], &temp_dir)?;
+            let child = runtime.spawn(
+                std::path::Path::new("msiexec.exe"),
+                &["/i".into(), msi],
+                &temp_dir,
+            )?;
             crate::linux::reap(child);
         }
         #[cfg(not(target_os = "linux"))]
         {
-        let _ = &msi_path;
-        return Err("Installing Vanilla's launcher is only supported on Windows.".into());
+            let _ = &msi_path;
+            return Err("Installing Vanilla's launcher is only supported on Windows.".into());
         }
     }
 

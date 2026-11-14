@@ -295,7 +295,9 @@ def main():
         assert capabilities["linux"] and not capabilities["windowsSecurity"]
         assert driver.js("return getComputedStyle(document.querySelector('#btnExcludeAv')).display") == "none"
         driver.click("#nav-settings")
-        assert driver.js("return !document.querySelector('#linuxRuntimeGroup').hidden")
+        driver.click("#setnav-proton")
+        wait(lambda: driver.js("return !document.querySelector('#setpage-proton').hidden && $('protonStatus').dataset.state !== 'checking'"), "Proton settings page")
+        assert driver.js("return $('protonStatus').dataset.state") == "error"
         record("Linux platform controls and Windows security controls")
         driver.click("#setnav-appearance")
         driver.js("const select=document.querySelector('#cfgTheme');select.value='win98';select.dispatchEvent(new Event('change',{bubbles:true}));")
@@ -317,11 +319,18 @@ def main():
         wait(lambda: not desktop.exists(), "autostart disable")
         record("XDG autostart opt-in, valid desktop entry and removal")
         wait(lambda: watcher.items, "native tray registration")
-        menu_action(bus, watcher, "Radium")
-        wait(lambda: driver.js("return document.body.classList.contains('network-radium')"), "tray network action")
-        menu_action(bus, watcher, "Rec EOS")
-        wait(lambda: driver.js("return document.body.classList.contains('network-receos')"), "tray return action")
-        record("Native tray registration and network menu actions")
+        # The native menu's first item opens the skinned panel (the Windows
+        # right-click panel); its picks go through tray_menu_pick.
+        driver.async_js("window.__validationPanel=[];await window.__TAURI__.event.listen('tray-panel',e=>window.__validationPanel.push(e.payload));return true;")
+        menu_action(bus, watcher, "Rec EOS Launcher…")
+        wait(lambda: driver.js("return window.__validationPanel.includes(true)"), "tray panel opens")
+        driver.invoke("tray_menu_pick", {"id": "network:radium"})
+        wait(lambda: driver.js("return document.body.classList.contains('network-radium')"), "tray panel network pick")
+        driver.invoke("tray_menu_pick", {"id": "network:receos"})
+        wait(lambda: driver.js("return document.body.classList.contains('network-receos')"), "tray panel return pick")
+        driver.invoke("tray_menu_hide")
+        wait(lambda: driver.js("return window.__validationPanel.includes(false)"), "tray panel closes")
+        record("Native tray registration, skinned tray panel and its network picks")
         driver.click("#tgl-runInBackground")
         wait(lambda: driver.invoke("cmd_get_config")["runInBackground"], "tray setting")
         driver.async_js("await window.__TAURI__.event.listen('launcher-hidden',()=>window.__validationHidden=true);return true;")
@@ -329,7 +338,7 @@ def main():
         # response before hiding and restore through D-Bus before querying it.
         driver.async_js("setTimeout(()=>window.__TAURI__.window.getCurrentWindow().close(),1000);return true;")
         time.sleep(2)
-        menu_action(bus, watcher, "Open Rec EOS Launcher")
+        menu_action(bus, watcher, "Open window")
         wait(lambda: driver.async_js("return await window.__TAURI__.window.getCurrentWindow().isVisible();"), "tray restore")
         wait(lambda: driver.js("return window.__validationHidden===true"), "native hide event")
         record("Close to tray and restore through the native menu")
@@ -484,8 +493,7 @@ def main():
             child.wait(timeout=5)
         driver.screenshot(args.output / "home.png")
         driver.click("#nav-settings")
-        driver.click("#setnav-general")
-        driver.js("document.querySelector('#linuxRuntimeGroup').scrollIntoView({block:'start'});")
+        driver.click("#setnav-proton")
         driver.screenshot(args.output / "settings.png")
         config = driver.invoke("cmd_get_config")
         config["runInBackground"] = False

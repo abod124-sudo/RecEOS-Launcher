@@ -536,7 +536,7 @@ const logView = (() => {
 const REPORT_PROMPTS = {
   launch:   'What did you press, and what happened instead? Any message on screen?',
   download: 'Where did it stop — downloading, extracting, verifying? What did it say?',
-  account:  'Which network were you signing in to, and what happened?',
+  account:  'Which revival were you signing in to, and what happened?',
   looks:    'Which page and which skin? What looks wrong?',
   launcher: 'What were you doing, and what went wrong?',
   other:    'Tell us what happened, and what you expected instead.',

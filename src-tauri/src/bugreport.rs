@@ -346,7 +346,7 @@ impl Facts {
         let row = |label, value: String| Fact { label, value };
         vec![
             row("Launcher", self.launcher_version.clone()),
-            row("Network", network_label(self.network).to_string()),
+            row("Revival", network_label(self.network).to_string()),
             row("System", self.os.clone()),
             row("Game client", self.client_line()),
             row("Install folder", self.install_dir.clone()),
@@ -547,7 +547,7 @@ async fn send(app: tauri::AppHandle, report: Report) -> Result<Sent, String> {
 
     let mut fields = vec![
         serde_json::json!({ "name": "Severity", "value": severity_name, "inline": true }),
-        serde_json::json!({ "name": "Network", "value": network_label(facts.network), "inline": true }),
+        serde_json::json!({ "name": "Revival", "value": network_label(facts.network), "inline": true }),
         serde_json::json!({ "name": "Launcher", "value": format!("{} · {}", facts.launcher_version, facts.os), "inline": true }),
         serde_json::json!({
             "name": "Game",

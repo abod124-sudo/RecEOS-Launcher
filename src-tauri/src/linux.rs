@@ -15,6 +15,9 @@ use crate::config::{self, Network};
 pub struct ProtonSettings {
     pub proton_dir: String,
     pub compat_data_dir: String,
+    /// Run Direct3D through WineD3D (OpenGL) instead of DXVK (Vulkan), for
+    /// systems without a Vulkan 1.3 driver. Slower, but starts where DXVK can't.
+    pub opengl: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,11 +58,26 @@ pub async fn pick_linux_directory() -> Option<String> {
 }
 
 fn unbundle_environment(command: &mut Command) {
-    for key in ["LD_LIBRARY_PATH", "LD_PRELOAD", "GTK_PATH", "GTK_EXE_PREFIX", "GTK_DATA_PREFIX",
-        "GIO_EXTRA_MODULES", "GSETTINGS_SCHEMA_DIR", "GI_TYPELIB_PATH", "GDK_PIXBUF_MODULE_FILE",
-        "GDK_PIXBUF_MODULEDIR", "WEBKIT_EXEC_PATH", "GST_PLUGIN_PATH", "GST_PLUGIN_SYSTEM_PATH",
-        "GST_PLUGIN_SCANNER", "QT_PLUGIN_PATH", "QT_QPA_PLATFORM_PLUGIN_PATH",
-        "PYTHONHOME", "PYTHONPATH"] {
+    for key in [
+        "LD_LIBRARY_PATH",
+        "LD_PRELOAD",
+        "GTK_PATH",
+        "GTK_EXE_PREFIX",
+        "GTK_DATA_PREFIX",
+        "GIO_EXTRA_MODULES",
+        "GSETTINGS_SCHEMA_DIR",
+        "GI_TYPELIB_PATH",
+        "GDK_PIXBUF_MODULE_FILE",
+        "GDK_PIXBUF_MODULEDIR",
+        "WEBKIT_EXEC_PATH",
+        "GST_PLUGIN_PATH",
+        "GST_PLUGIN_SYSTEM_PATH",
+        "GST_PLUGIN_SCANNER",
+        "QT_PLUGIN_PATH",
+        "QT_QPA_PLATFORM_PLUGIN_PATH",
+        "PYTHONHOME",
+        "PYTHONPATH",
+    ] {
         command.env_remove(key);
     }
 }
@@ -78,26 +96,51 @@ pub(crate) fn system_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
 #[cfg(target_os = "linux")]
 pub fn tray_host_available() -> bool {
     use gio::glib::variant::ToVariant;
-    let Ok(bus) = gio::bus_get_sync(gio::BusType::Session, None::<&gio::Cancellable>) else { return false };
+    let Ok(bus) = gio::bus_get_sync(gio::BusType::Session, None::<&gio::Cancellable>) else {
+        return false;
+    };
     // Constructing an AppIndicator succeeds even without a panel. Require a
     // registered host before hiding, and recheck so a late-starting panel or
     // a disappearing desktop host is handled on the next close request.
-    bus.call_sync(Some("org.kde.StatusNotifierWatcher"), "/StatusNotifierWatcher",
-        "org.freedesktop.DBus.Properties", "Get",
-        Some(&("org.kde.StatusNotifierWatcher", "IsStatusNotifierHostRegistered").to_variant()),
-        None, gio::DBusCallFlags::NO_AUTO_START, 500, None::<&gio::Cancellable>)
-        .ok().and_then(|value| value.get::<(gio::glib::Variant,)>())
-        .and_then(|(value,)| value.get::<bool>()).unwrap_or(false)
+    bus.call_sync(
+        Some("org.kde.StatusNotifierWatcher"),
+        "/StatusNotifierWatcher",
+        "org.freedesktop.DBus.Properties",
+        "Get",
+        Some(
+            &(
+                "org.kde.StatusNotifierWatcher",
+                "IsStatusNotifierHostRegistered",
+            )
+                .to_variant(),
+        ),
+        None,
+        gio::DBusCallFlags::NO_AUTO_START,
+        500,
+        None::<&gio::Cancellable>,
+    )
+    .ok()
+    .and_then(|value| value.get::<(gio::glib::Variant,)>())
+    .and_then(|(value,)| value.get::<bool>())
+    .unwrap_or(false)
 }
 
 fn allowed_linux_url(url: &str) -> bool {
-    if url.len() > 4096 || url.chars().any(char::is_control) { return false; }
-    if url == "steam://" { return true; }
+    if url.len() > 4096 || url.chars().any(char::is_control) {
+        return false;
+    }
+    if url == "steam://" {
+        return true;
+    }
     if let Some(id) = url.strip_prefix("steam://install/") {
         return !id.is_empty() && id.bytes().all(|c| c.is_ascii_digit());
     }
-    tauri::Url::parse(url).is_ok_and(|parsed| parsed.scheme() == "https"
-        && parsed.host_str().is_some() && parsed.username().is_empty() && parsed.password().is_none())
+    tauri::Url::parse(url).is_ok_and(|parsed| {
+        parsed.scheme() == "https"
+            && parsed.host_str().is_some()
+            && parsed.username().is_empty()
+            && parsed.password().is_none()
+    })
 }
 
 #[tauri::command(async)]
@@ -105,7 +148,9 @@ pub fn open_linux_url(url: String) -> Result<(), String> {
     if !cfg!(target_os = "linux") || !allowed_linux_url(&url) {
         return Err("Only HTTPS websites and approved Steam links can be opened on Linux.".into());
     }
-    let child = system_command("xdg-open").arg(url).spawn()
+    let child = system_command("xdg-open")
+        .arg(url)
+        .spawn()
         .map_err(|e| format!("Could not open the link. Install xdg-utils: {e}"))?;
     reap(child);
     Ok(())
@@ -207,12 +252,16 @@ fn runtime_entry(proton: &Path, roots: &[PathBuf]) -> Result<PathBuf, String> {
     ))
 }
 
+/// The Proton verb games are started with; see [`Runtime::spawn`].
+pub const LAUNCH_VERB: &str = "waitforexitandrun";
+
 pub struct Runtime {
     pub steam: PathBuf,
     pub proton: PathBuf,
     pub compat_data: PathBuf,
     pub entry: PathBuf,
     pub network: Network,
+    pub opengl: bool,
 }
 
 /// Canonicalize existing ancestors too, so a not-yet-created child below a
@@ -231,10 +280,20 @@ pub(crate) fn resolved_path(path: &Path) -> Result<PathBuf, String> {
         match std::fs::symlink_metadata(ancestor) {
             Ok(_) => break,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                tail.push(ancestor.file_name().ok_or("Invalid directory")?.to_os_string());
+                tail.push(
+                    ancestor
+                        .file_name()
+                        .ok_or("Invalid directory")?
+                        .to_os_string(),
+                );
                 ancestor = ancestor.parent().ok_or("Invalid directory")?;
             }
-            Err(error) => return Err(format!("Cannot inspect path {}: {error}", ancestor.display())),
+            Err(error) => {
+                return Err(format!(
+                    "Cannot inspect path {}: {error}",
+                    ancestor.display()
+                ))
+            }
         }
     }
     let mut resolved = std::fs::canonicalize(ancestor)
@@ -321,13 +380,15 @@ pub fn resolve(app: &tauri::AppHandle, network: Network) -> Result<Runtime, Stri
             || prefix.starts_with(&other_prefix)
             || other_prefix.starts_with(&prefix)
         {
-            return Err("Each network needs its own separate compatibility-data directory.".into());
+            return Err("Each revival needs its own separate compatibility-data directory.".into());
         }
     }
     #[cfg(target_os = "linux")]
     {
-        let clients: Vec<_> = Network::ALL.into_iter()
-            .map(|n| PathBuf::from(config::get_client_dir_for(app, &cfg, n))).collect();
+        let clients: Vec<_> = Network::ALL
+            .into_iter()
+            .map(|n| PathBuf::from(config::get_client_dir_for(app, &cfg, n)))
+            .collect();
         prefixes_outside_clients(std::slice::from_ref(&compat_data), &clients)?;
         writable_compat_directory(&compat_data)?;
         writable_compat_directory(&prefix)?;
@@ -338,6 +399,7 @@ pub fn resolve(app: &tauri::AppHandle, network: Network) -> Result<Runtime, Stri
         compat_data,
         entry,
         network,
+        opengl: selected.is_some_and(|s| s.opengl),
     })
 }
 
@@ -346,7 +408,10 @@ fn prefixes_outside_clients(prefixes: &[PathBuf], clients: &[PathBuf]) -> Result
     for client in clients {
         let client = resolved_path(client)?;
         for directory in prefixes {
-            for prefix in [resolved_path(directory)?, resolved_path(&directory.join("pfx"))?] {
+            for prefix in [
+                resolved_path(directory)?,
+                resolved_path(&directory.join("pfx"))?,
+            ] {
                 if prefix.starts_with(&client) {
                     return Err(format!(
                         "Proton data {} is inside game client {}. Move the compatibility-data directory outside all game client folders and update Linux / Proton settings before launching, updating or uninstalling. Prefixes must be retained.",
@@ -366,7 +431,11 @@ pub(crate) fn guard_client_cleanup(app: &tauri::AppHandle, client: &Path) -> Res
     let mut prefixes = Vec::new();
     for network in Network::ALL {
         prefixes.push(compat_data_dir(app, network)?);
-        prefixes.push(config::app_data_dir(app).join("proton").join(network_name(network)));
+        prefixes.push(
+            config::app_data_dir(app)
+                .join("proton")
+                .join(network_name(network)),
+        );
     }
     prefixes_outside_clients(&prefixes, &[client.to_path_buf()])
 }
@@ -378,26 +447,39 @@ pub(crate) fn guard_client_cleanup(app: &tauri::AppHandle, client: &Path) -> Res
 #[cfg(target_os = "linux")]
 fn writable_compat_directory(path: &Path) -> Result<(), String> {
     use std::os::unix::ffi::OsStrExt;
-    let problem = || format!(
+    let problem = || {
+        format!(
         "Cannot write to Proton compatibility directory {}. Choose a directory you own with read, write and search permissions.",
         path.display()
-    );
+    )
+    };
     let mut existing = path;
     loop {
         match std::fs::metadata(existing) {
             Ok(metadata) => {
                 if !metadata.is_dir() {
-                    return Err(format!("Proton compatibility path {} is not a directory.", existing.display()));
+                    return Err(format!(
+                        "Proton compatibility path {} is not a directory.",
+                        existing.display()
+                    ));
                 }
                 let name = std::ffi::CString::new(existing.as_os_str().as_bytes())
                     .map_err(|_| problem())?;
                 // SAFETY: name is a valid NUL-terminated path; this call only
                 // checks access using the launcher's effective credentials.
                 let accessible = unsafe {
-                    libc::faccessat(libc::AT_FDCWD, name.as_ptr(),
-                        libc::R_OK | libc::W_OK | libc::X_OK, libc::AT_EACCESS)
+                    libc::faccessat(
+                        libc::AT_FDCWD,
+                        name.as_ptr(),
+                        libc::R_OK | libc::W_OK | libc::X_OK,
+                        libc::AT_EACCESS,
+                    )
                 };
-                return if accessible == 0 { Ok(()) } else { Err(problem()) };
+                return if accessible == 0 {
+                    Ok(())
+                } else {
+                    Err(problem())
+                };
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 existing = existing.parent().ok_or_else(problem)?;
@@ -466,11 +548,19 @@ impl Runtime {
             let existing = std::env::var("WINEDLLOVERRIDES").unwrap_or_default();
             cmd.env("WINEDLLOVERRIDES", format!("{existing};{native_override}"));
         }
+        if self.opengl {
+            cmd.env("PROTON_USE_WINED3D", "1");
+        }
         Ok(cmd)
     }
 
+    /// Starts `exe` in this prefix the way Steam starts a game: Proton's
+    /// `waitforexitandrun` lets the prefix's previous Wine session finish
+    /// shutting down first. Started straight after a crash or a Stop with
+    /// plain `run`, the game met the old session's leftovers, and Rec EOS's
+    /// mod loader failed to open its console (seen 2026-11-13).
     pub fn spawn(&self, exe: &Path, args: &[String], work_dir: &Path) -> Result<Child, String> {
-        let mut cmd = self.command("run")?;
+        let mut cmd = self.command(LAUNCH_VERB)?;
         self.expose_paths(&mut cmd, &[work_dir])?;
         cmd.env("STEAM_COMPAT_INSTALL_PATH", work_dir);
         cmd.arg(exe).args(args).current_dir(work_dir);
@@ -525,10 +615,16 @@ pub fn stage_helper(runtime: &Runtime, source: &Path) -> Result<PathBuf, String>
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?
         .as_nanos();
-    let directory = runtime.compat_data.join(format!("receos-helper-{}-{nonce}", std::process::id()));
+    let directory = runtime
+        .compat_data
+        .join(format!("receos-helper-{}-{nonce}", std::process::id()));
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
-    { use std::os::unix::fs::DirBuilderExt; builder.mode(0o700); }
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
     builder.create(&directory).map_err(|e| e.to_string())?;
     let target = directory.join("receos-proton-helper.exe");
     let mut options = std::fs::OpenOptions::new();
@@ -552,7 +648,12 @@ pub struct HelperFiles(pub PathBuf);
 impl Drop for HelperFiles {
     fn drop(&mut self) {
         if let Some(directory) = self.0.parent() {
-            for name in ["request.json", "response.json", "response.partial", "receos-proton-helper.exe"] {
+            for name in [
+                "request.json",
+                "response.json",
+                "response.partial",
+                "receos-proton-helper.exe",
+            ] {
                 let _ = std::fs::remove_file(directory.join(name));
             }
             let _ = std::fs::remove_dir(directory);
@@ -565,7 +666,10 @@ pub fn helper_reply(path: &Path) -> Result<Option<Value>, String> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(target_os = "linux")]
-    { use std::os::unix::fs::OpenOptionsExt; options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK); }
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
     let file = match options.open(path) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -575,9 +679,15 @@ pub fn helper_reply(path: &Path) -> Result<Option<Value>, String> {
         return Err("Invalid Proton helper result file.".into());
     }
     let mut bytes = Vec::new();
-    file.take(65537).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
-    if bytes.len() > 65536 { return Err("Proton helper result is too large.".into()); }
-    serde_json::from_slice(&bytes).map(Some).map_err(|e| format!("Invalid Proton helper result: {e}"))
+    file.take(65537)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() > 65536 {
+        return Err("Proton helper result is too large.".into());
+    }
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|e| format!("Invalid Proton helper result: {e}"))
 }
 
 pub fn reap(mut child: Child) {
@@ -593,14 +703,125 @@ pub fn get_linux_runtime_status(app: tauri::AppHandle, network: Option<String>) 
     }
     let network = Network::parse(network.as_deref());
     let cfg = config::current(&app);
-    let tools = steam_dir(&cfg.linux)
-        .map(|s| installed_protons(&libraries(&s)))
-        .unwrap_or_default();
+    let steam = steam_dir(&cfg.linux).ok();
+    let tools: Vec<Value> = steam
+        .as_ref()
+        .map(|s| installed_protons(&libraries(s)))
+        .unwrap_or_default()
+        .into_iter()
+        .map(
+            |p| json!({ "name": tool_name(&p), "path": p, "stable": proton_version(&p).is_some() }),
+        )
+        .collect();
+    // The prefix shown even when Steam or Proton is missing, so the page can
+    // still say where this network's Windows files live.
+    let compat_data = compat_data_dir(&app, network).ok();
+    let base = json!({
+        "required": true,
+        "steamDir": steam,
+        "compatDataDir": compat_data,
+        "defaultCompatDataDir": config::app_data_dir(&app).join("proton").join(network_name(network)),
+        "installedProtons": tools,
+        "gameplayValidated": false,
+    });
+    let mut status = base;
     match resolve(&app, network) {
-        Ok(r) => json!({"required": true, "ready": true, "steamDir": r.steam,
-            "protonDir": r.proton, "compatDataDir": r.compat_data, "runtime": r.entry,
-            "installedProtons": tools, "gameplayValidated": false}),
-        Err(e) => json!({"required": true, "ready": false, "error": e, "installedProtons": tools}),
+        Ok(r) => {
+            status["ready"] = json!(true);
+            status["protonDir"] = json!(r.proton);
+            status["protonName"] = json!(tool_name(&r.proton));
+            status["runtimeName"] = json!(r.entry.parent().map(tool_name));
+            status["compatDataDir"] = json!(r.compat_data);
+        }
+        Err(e) => {
+            status["ready"] = json!(false);
+            status["error"] = json!(e);
+        }
+    }
+    status
+}
+
+/// Opens a network's Proton prefix folder in the file manager. Only the
+/// configured prefix, never a path from the page.
+#[tauri::command(async)]
+pub fn open_proton_prefix(app: tauri::AppHandle, network: String) -> Result<(), String> {
+    if !cfg!(target_os = "linux") {
+        return Err("Proton prefixes exist on Linux only.".into());
+    }
+    let dir = compat_data_dir(&app, Network::parse(Some(&network)))?;
+    if !dir.is_dir() {
+        return Err(
+            "This revival has no Proton files yet. They are created the first time you play."
+                .into(),
+        );
+    }
+    crate::download::reveal_folder(&dir);
+    Ok(())
+}
+
+/// A Steam tool's display name: its folder name ("Proton 11.0").
+fn tool_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+/// The last game launch through Proton, for explaining a game that closes
+/// right after starting. Cleared by Stop, which is a deliberate close.
+static LAST_LAUNCH: std::sync::Mutex<Option<(std::time::Instant, Network)>> =
+    std::sync::Mutex::new(None);
+
+/// How soon after launch a close counts as "closed right after starting".
+const EARLY_EXIT: std::time::Duration = std::time::Duration::from_secs(45);
+
+pub fn note_launch(network: Network) {
+    if let Ok(mut last) = LAST_LAUNCH.lock() {
+        *last = Some((std::time::Instant::now(), network));
+    }
+}
+
+fn forget_launch() {
+    if let Ok(mut last) = LAST_LAUNCH.lock() {
+        *last = None;
+    }
+}
+
+/// Called when the game is seen to close. When that happens within
+/// `EARLY_EXIT` of launching (and not through Stop), explains the most likely
+/// cause, reading the game's own log for the graphics failure Proton gives on
+/// a system without a usable Vulkan driver.
+pub fn early_exit_hint() -> Option<String> {
+    let (launched, network) = LAST_LAUNCH.lock().ok()?.take()?;
+    if launched.elapsed() > EARLY_EXIT {
+        return None;
+    }
+    let app = APP.get()?;
+    let opengl = config::current(app)
+        .linux
+        .networks
+        .get(network_name(network))
+        .is_some_and(|s| s.opengl);
+    let log = rec_room_data_dir(network)
+        .and_then(|dir| std::fs::read_to_string(dir.join("Player.log")).ok())
+        .unwrap_or_default();
+    Some(early_exit_message(&log, opengl))
+}
+
+fn early_exit_message(player_log: &str, opengl: bool) -> String {
+    let no_vulkan = player_log.contains("d3d11: failed to create factory");
+    match (no_vulkan, opengl) {
+        (true, false) => "The game couldn't start its graphics: Proton found no Vulkan 1.3 driver. \
+            Install your graphics card's Vulkan driver, or turn on OpenGL mode in Settings > Proton."
+            .into(),
+        (true, true) => "The game couldn't start its graphics, even in OpenGL mode. \
+            Check that your graphics drivers are installed."
+            .into(),
+        (false, false) => "The game closed right after starting. If it keeps happening, \
+            try OpenGL mode in Settings > Proton, or check the Logs page."
+            .into(),
+        (false, true) => "The game closed right after starting. Check the Logs page, \
+            or turn OpenGL mode off in Settings > Proton."
+            .into(),
     }
 }
 
@@ -611,7 +832,13 @@ fn legacy_batch_args(path: String) -> Result<Vec<String>, String> {
     if path.contains(['%', '!', '"', '&', '|', '<', '>', '^', '\r', '\n']) {
         return Err("Move this legacy batch client to a directory without cmd metacharacters, or select its game executable.".into());
     }
-    Ok(vec!["/d".into(), "/s".into(), "/c".into(), "call".into(), path])
+    Ok(vec![
+        "/d".into(),
+        "/s".into(),
+        "/c".into(),
+        "call".into(),
+        path,
+    ])
 }
 
 pub fn launch(
@@ -946,20 +1173,43 @@ mod processes {
     }
 
     pub fn stop_helper(prefix: &Path, image: &Path) {
-        let Ok(prefix) = std::fs::canonicalize(prefix) else { return };
-        let Some(name) = image.file_name().and_then(|s| s.to_str()) else { return };
-        let Ok(entries) = std::fs::read_dir("/proc") else { return };
+        let Ok(prefix) = std::fs::canonicalize(prefix) else {
+            return;
+        };
+        let Some(name) = image.file_name().and_then(|s| s.to_str()) else {
+            return;
+        };
+        let Ok(entries) = std::fs::read_dir("/proc") else {
+            return;
+        };
         for entry in entries.flatten() {
             let dir = entry.path();
-            let Some(pid) = entry.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else { continue };
-            if !owned(&dir) || mapped_image(&dir, &[name]).as_deref() != Some(image) { continue }
+            let Some(pid) = entry
+                .file_name()
+                .to_str()
+                .and_then(|s| s.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            if !owned(&dir) || mapped_image(&dir, &[name]).as_deref() != Some(image) {
+                continue;
+            }
             let matches = std::fs::read(dir.join("environ")).ok().is_some_and(|env| {
-                env.split(|&c| c == 0).find_map(|s| s.strip_prefix(b"WINEPREFIX="))
+                env.split(|&c| c == 0)
+                    .find_map(|s| s.strip_prefix(b"WINEPREFIX="))
                     .and_then(|s| std::str::from_utf8(s).ok())
-                    .and_then(|s| std::fs::canonicalize(s).ok()).as_ref() == Some(&prefix)
+                    .and_then(|s| std::fs::canonicalize(s).ok())
+                    .as_ref()
+                    == Some(&prefix)
             });
             if matches {
-                if let Some(start) = start_time(&dir) { stop(Process { pid, start, exe: image.to_path_buf() }); }
+                if let Some(start) = start_time(&dir) {
+                    stop(Process {
+                        pid,
+                        start,
+                        exe: image.to_path_buf(),
+                    });
+                }
             }
         }
     }
@@ -1038,6 +1288,7 @@ pub fn game_running(images: &[&str], scoped: bool) -> bool {
 }
 
 pub fn stop_games() -> bool {
+    forget_launch();
     #[cfg(target_os = "linux")]
     {
         processes::list(&crate::game::GAME_EXES, true)
@@ -1077,8 +1328,12 @@ mod tests {
     fn missing_directories_are_resolved_but_dangling_symlinks_are_rejected() {
         use std::os::unix::fs::symlink;
         let root = temp("missing-prefix-path");
-        assert_eq!(resolved_path(&root.join("not created/pfx")).unwrap(),
-            std::fs::canonicalize(&root).unwrap().join("not created/pfx"));
+        assert_eq!(
+            resolved_path(&root.join("not created/pfx")).unwrap(),
+            std::fs::canonicalize(&root)
+                .unwrap()
+                .join("not created/pfx")
+        );
         symlink(root.join("missing target"), root.join("dangling prefix")).unwrap();
         assert!(resolved_path(&root.join("dangling prefix/pfx")).is_err());
         std::fs::remove_dir_all(root).unwrap();
@@ -1093,8 +1348,12 @@ mod tests {
         std::fs::create_dir_all(nested.join("pfx/drive_c/users/steamuser")).unwrap();
         let save = nested.join("pfx/drive_c/users/steamuser/save.dat");
         std::fs::write(&save, b"preserved save").unwrap();
-        assert!(prefixes_outside_clients(std::slice::from_ref(&nested), std::slice::from_ref(&client))
-            .unwrap_err().contains("Move the compatibility-data directory"));
+        assert!(prefixes_outside_clients(
+            std::slice::from_ref(&nested),
+            std::slice::from_ref(&client)
+        )
+        .unwrap_err()
+        .contains("Move the compatibility-data directory"));
         let external = root.join("external prefix");
         std::fs::create_dir_all(&external).unwrap();
         symlink(nested.join("pfx"), external.join("pfx")).unwrap();
@@ -1112,7 +1371,11 @@ mod tests {
         prefixes_outside_clients(std::slice::from_ref(&prefix), &[root.join("client")]).unwrap();
         // Vanilla and user-selected Windows installs can live below drive_c;
         // clearing their game files does not remove the containing prefix.
-        prefixes_outside_clients(std::slice::from_ref(&prefix), &[prefix.join("pfx/drive_c/Games/Rec EOS")]).unwrap();
+        prefixes_outside_clients(
+            std::slice::from_ref(&prefix),
+            &[prefix.join("pfx/drive_c/Games/Rec EOS")],
+        )
+        .unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1124,7 +1387,9 @@ mod tests {
         writable_compat_directory(&missing).unwrap();
         assert!(!missing.exists());
         std::fs::write(root.join("file"), b"not a directory").unwrap();
-        assert!(writable_compat_directory(&root.join("file")).unwrap_err().contains("not a directory"));
+        assert!(writable_compat_directory(&root.join("file"))
+            .unwrap_err()
+            .contains("not a directory"));
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1135,7 +1400,9 @@ mod tests {
         const CHILD_PATH: &str = "RECEOS_TEST_UNWRITABLE_PREFIX";
         if let Some(path) = std::env::var_os(CHILD_PATH) {
             let path = PathBuf::from(path);
-            assert!(writable_compat_directory(&path).unwrap_err().contains("permissions"));
+            assert!(writable_compat_directory(&path)
+                .unwrap_err()
+                .contains("permissions"));
             assert!(writable_compat_directory(&path.join("new child")).is_err());
             assert!(resolved_path(&path.join("new child")).is_err());
             return;
@@ -1145,21 +1412,30 @@ mod tests {
         for path in [root.join("compat data"), root.join("other/pfx")] {
             std::fs::create_dir_all(&path).unwrap();
             for mode in [0o500, 0o400] {
-              std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
-              if unsafe { libc::geteuid() } == 0 {
-                // Root can write mode-0500 directories. Exercise the real
-                // unprivileged access check even in root-owned CI containers.
-                let status = Command::new(std::env::current_exe().unwrap())
-                    .args(["--exact", "linux::tests::unwritable_compatibility_data_and_prefix_are_rejected"])
-                    .env(CHILD_PATH, &path).uid(65534).gid(65534).status().unwrap();
-                assert!(status.success());
-              } else {
-                assert!(writable_compat_directory(&path).unwrap_err().contains("permissions"));
-                assert!(writable_compat_directory(&path.join("new child")).is_err());
-                if mode == 0o400 {
-                    assert!(resolved_path(&path.join("new child")).is_err());
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+                if unsafe { libc::geteuid() } == 0 {
+                    // Root can write mode-0500 directories. Exercise the real
+                    // unprivileged access check even in root-owned CI containers.
+                    let status = Command::new(std::env::current_exe().unwrap())
+                        .args([
+                            "--exact",
+                            "linux::tests::unwritable_compatibility_data_and_prefix_are_rejected",
+                        ])
+                        .env(CHILD_PATH, &path)
+                        .uid(65534)
+                        .gid(65534)
+                        .status()
+                        .unwrap();
+                    assert!(status.success());
+                } else {
+                    assert!(writable_compat_directory(&path)
+                        .unwrap_err()
+                        .contains("permissions"));
+                    assert!(writable_compat_directory(&path.join("new child")).is_err());
+                    if mode == 0o400 {
+                        assert!(resolved_path(&path.join("new child")).is_err());
+                    }
                 }
-              }
             }
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
@@ -1169,10 +1445,14 @@ mod tests {
     #[test]
     fn system_tools_use_host_libraries_and_keep_the_desktop_session() {
         let mut command = Command::new("notify-send");
-        command.env("LD_LIBRARY_PATH", "/app/usr/lib").env("GIO_EXTRA_MODULES", "/app/gio")
-            .env("GSETTINGS_SCHEMA_DIR", "/app/schemas").env("DISPLAY", ":17")
+        command
+            .env("LD_LIBRARY_PATH", "/app/usr/lib")
+            .env("GIO_EXTRA_MODULES", "/app/gio")
+            .env("GSETTINGS_SCHEMA_DIR", "/app/schemas")
+            .env("DISPLAY", ":17")
             .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/session")
-            .env("PYTHONHOME", "/app/usr").env("PYTHONPATH", "/app/python")
+            .env("PYTHONHOME", "/app/usr")
+            .env("PYTHONPATH", "/app/python")
             .env("PYTHONDONTWRITEBYTECODE", "1");
         unbundle_environment(&mut command);
         let env: BTreeMap<_, _> = command.get_envs().collect();
@@ -1181,9 +1461,18 @@ mod tests {
         assert_eq!(env[std::ffi::OsStr::new("GSETTINGS_SCHEMA_DIR")], None);
         assert_eq!(env[std::ffi::OsStr::new("PYTHONHOME")], None);
         assert_eq!(env[std::ffi::OsStr::new("PYTHONPATH")], None);
-        assert_eq!(env[std::ffi::OsStr::new("PYTHONDONTWRITEBYTECODE")].unwrap(), "1");
-        assert_eq!(env[std::ffi::OsStr::new("DISPLAY")], Some(std::ffi::OsStr::new(":17")));
-        assert_eq!(env[std::ffi::OsStr::new("DBUS_SESSION_BUS_ADDRESS")], Some(std::ffi::OsStr::new("unix:path=/session")));
+        assert_eq!(
+            env[std::ffi::OsStr::new("PYTHONDONTWRITEBYTECODE")].unwrap(),
+            "1"
+        );
+        assert_eq!(
+            env[std::ffi::OsStr::new("DISPLAY")],
+            Some(std::ffi::OsStr::new(":17"))
+        );
+        assert_eq!(
+            env[std::ffi::OsStr::new("DBUS_SESSION_BUS_ADDRESS")],
+            Some(std::ffi::OsStr::new("unix:path=/session"))
+        );
     }
 
     #[cfg(target_os = "linux")]
@@ -1191,11 +1480,19 @@ mod tests {
     fn host_python_can_import_its_standard_library_after_appimage_cleanup() {
         let root = temp("appimage-python");
         let mut command = Command::new("python3");
-        command.env("PYTHONHOME", root.join("bundled-python"))
+        command
+            .env("PYTHONHOME", root.join("bundled-python"))
             .env("PYTHONPATH", root.join("bundled-modules"));
         unbundle_environment(&mut command);
-        let output = command.args(["-c", "import encodings; print('host-python')"]).output().unwrap();
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let output = command
+            .args(["-c", "import encodings; print('host-python')"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         assert_eq!(output.stdout, b"host-python\n");
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -1212,10 +1509,23 @@ mod tests {
     }
     #[test]
     fn desktop_url_opener_keeps_the_existing_scheme_restrictions() {
-        for valid in ["https://rec-eos.com/", "https://github.com/abod124-sudo/RecEOS-Launcher/releases/latest", "steam://", "steam://install/92"] {
+        for valid in [
+            "https://rec-eos.com/",
+            "https://github.com/abod124-sudo/RecEOS-Launcher/releases/latest",
+            "steam://",
+            "steam://install/92",
+        ] {
             assert!(allowed_linux_url(valid), "{valid}");
         }
-        for invalid in ["file:///etc/passwd", "javascript:alert(1)", "http://example.com/", "steam://run/92", "steam://install/92;other", "https://user:password@example.com", "https://example.com/\nother"] {
+        for invalid in [
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "http://example.com/",
+            "steam://run/92",
+            "steam://install/92;other",
+            "https://user:password@example.com",
+            "https://example.com/\nother",
+        ] {
             assert!(!allowed_linux_url(invalid), "{invalid}");
         }
     }
@@ -1337,6 +1647,7 @@ mod tests {
             ProtonSettings {
                 proton_dir: "/media/Steam/Proton 10.0".into(),
                 compat_data_dir: "/home/user/My Games/stella".into(),
+                opengl: true,
             },
         );
         let decoded: LinuxSettings =
@@ -1345,6 +1656,28 @@ mod tests {
             decoded.networks["stella"].compat_data_dir,
             settings.networks["stella"].compat_data_dir
         );
+        assert!(decoded.networks["stella"].opengl);
+        // Configs saved before OpenGL mode existed keep Vulkan.
+        let older: LinuxSettings =
+            serde_json::from_str(r#"{"networks":{"receos":{"protonDir":""}}}"#).unwrap();
+        assert!(!older.networks["receos"].opengl);
+    }
+
+    #[test]
+    fn early_exit_messages_name_the_cause() {
+        let no_vulkan = "GfxDevice: creating device client; threaded=1\nd3d11: failed to create factory (80004005).\n";
+        assert!(early_exit_message(no_vulkan, false).contains("OpenGL mode"));
+        assert!(early_exit_message(no_vulkan, false).contains("Vulkan"));
+        assert!(!early_exit_message(no_vulkan, true).contains("turn on OpenGL"));
+        assert!(early_exit_message("", false).contains("try OpenGL mode"));
+        assert!(early_exit_message("", true).contains("turn OpenGL mode off"));
+    }
+
+    #[test]
+    fn stop_is_not_reported_as_an_early_exit() {
+        note_launch(Network::RecEos);
+        forget_launch();
+        assert!(LAST_LAUNCH.lock().unwrap().is_none());
     }
     #[test]
     fn proton_command_preserves_arguments_and_isolates_environment() {
@@ -1355,6 +1688,7 @@ mod tests {
             compat_data: root.join("prefix"),
             entry: root.join("runtime/_v2-entry-point"),
             network: Network::RecEos,
+            opengl: false,
         };
         let mut command = runtime.command("run").unwrap();
         command
@@ -1395,9 +1729,21 @@ mod tests {
         assert_eq!(env["LD_LIBRARY_PATH"], None);
         runtime.network = Network::Vanilla;
         let vanilla = runtime.command("run").unwrap();
-        let overrides = vanilla.get_envs().find(|(name, _)| *name == "WINEDLLOVERRIDES")
-            .and_then(|(_, value)| value).unwrap().to_string_lossy();
+        let overrides = vanilla
+            .get_envs()
+            .find(|(name, _)| *name == "WINEDLLOVERRIDES")
+            .and_then(|(_, value)| value)
+            .unwrap()
+            .to_string_lossy();
         assert!(overrides.ends_with("winhttp=n,b"));
+        assert!(vanilla
+            .get_envs()
+            .all(|(name, _)| name != "PROTON_USE_WINED3D"));
+        runtime.opengl = true;
+        let opengl = runtime.command("run").unwrap();
+        assert!(opengl
+            .get_envs()
+            .any(|(name, value)| name == "PROTON_USE_WINED3D" && value == Some("1".as_ref())));
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1406,7 +1752,14 @@ mod tests {
         let root = temp("helper-stage");
         let source = root.join("installed-helper.exe");
         std::fs::write(&source, b"bundled helper").unwrap();
-        let runtime = Runtime { steam: root.clone(), proton: root.clone(), compat_data: root.join("prefix"), entry: root.clone(), network: Network::Stella };
+        let runtime = Runtime {
+            steam: root.clone(),
+            proton: root.clone(),
+            compat_data: root.join("prefix"),
+            entry: root.clone(),
+            network: Network::Stella,
+            opengl: false,
+        };
         let first = stage_helper(&runtime, &source).unwrap();
         std::fs::write(&first, b"previous launch").unwrap();
         let second = stage_helper(&runtime, &source).unwrap();

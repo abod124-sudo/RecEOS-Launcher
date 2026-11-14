@@ -4494,6 +4494,8 @@ body:not(.network-vanilla) .network-only-vanilla { display: none !important; }
 body:not(.network-vanilla):not(.network-stella):not(.network-receos) .room-play-net { display: none !important; }
 body:not(.network-stella) .network-only-stella { display: none !important; }
 body:not(.network-receos) .network-only-receos { display: none !important; }
+/* Live players per room: Stella's and Rec EOS's servers count them. */
+body:not(.network-stella):not(.network-receos) .network-has-room-players { display: none !important; }
 /* The friends list, its tab and its setting: Stella's and Rec EOS's. */
 body:not(.network-stella):not(.network-receos) .network-has-friends { display: none !important; }
 
@@ -5650,6 +5652,172 @@ body.platform-linux.network-vanilla #btnReinstall,
 body.platform-linux.network-vanilla #btnUninstall { display: none !important; }
 body.platform-linux { background-color: var(--bg, #17191f); }
 body.platform-linux.glass-enabled { background-color: var(--lg-tint, #202634); }
-.linux-path-control { display: flex; gap: 8px; width: 100%; }
-.linux-path-control input { min-width: 0; flex: 1; }
-#linuxRuntimeStatus { overflow-wrap: anywhere; }
+/* Settings > Proton exists on Linux only. */
+body:not(.platform-linux) .linux-only { display: none !important; }
+
+/* Proton's readiness for the selected network: a dot in the skin's "ok"
+   colour (or red) beside a title and the reason, with a recheck button.
+   Ruled off like the rows around it. */
+.proton-status {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 0;
+  border-top: var(--set-sep, 1px solid var(--border-light));
+  border-bottom: var(--set-sep, 1px solid var(--border-light));
+}
+.proton-status + .sg-row { border-top: 0 !important; }
+.proton-status .sg-desc { overflow-wrap: anywhere; }
+.proton-status-dot {
+  flex-shrink: 0; width: 10px; height: 10px; border-radius: 50%;
+  background: var(--text-muted);
+}
+.proton-status[data-state="ready"] .proton-status-dot { background: var(--green-dim); }
+.proton-status[data-state="error"] .proton-status-dot { background: #ff6666; }
+.proton-status[data-state="error"] .sg-label { color: #ff6666; }
+.proton-status[data-state="checking"] .proton-status-dot { animation: proton-pulse 1s ease-in-out infinite alternate; }
+@keyframes proton-pulse { from { opacity: .35; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .proton-status[data-state="checking"] .proton-status-dot { animation: none; }
+}
+#setpage-proton .btn-open-folder:disabled { opacity: .45; cursor: default; }
+
+/* ── Weekly (Rec EOS) ─────────────────────────────────────────────────────
+   A reward card (the skin's picture on a lit stage, its name, earned or not,
+   and the time left) over the week's challenges as cards. Colours are the
+   skin's own tokens, so every launcher skin paints it. */
+.weekly-panel { display: flex; flex-direction: column; min-height: 0; }
+.weekly-scroll {
+  flex: 1; min-height: 0; overflow-y: auto;
+  padding: 6px 6px 14px; display: flex; flex-direction: column; gap: 16px;
+}
+.weekly-eyebrow {
+  font-size: 10px; font-weight: bold; letter-spacing: 1.2px; text-transform: uppercase;
+  color: var(--green-dim);
+}
+
+.weekly-hero {
+  display: grid; grid-template-columns: minmax(180px, 42%) 1fr; align-items: stretch;
+  min-height: 210px; overflow: hidden; border-radius: 14px;
+  background: var(--bg-panel);
+  border: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
+}
+.weekly-hero[hidden] { display: none; }
+.weekly-hero-stage {
+  position: relative; display: flex; align-items: center; justify-content: center;
+  overflow: hidden; padding: 18px;
+  background:
+    radial-gradient(circle at 50% 55%, color-mix(in srgb, var(--green-dim) 28%, transparent) 0, transparent 66%),
+    var(--bg-dark);
+}
+.weekly-hero-img {
+  position: relative; display: block;
+  width: 100%; height: 100%; max-height: 180px; object-fit: contain;
+  filter: drop-shadow(0 10px 18px rgba(0, 0, 0, .45));
+  animation: weekly-float 6s ease-in-out infinite;
+}
+/* A picture with its own backdrop fills the stage instead of floating on it. */
+.weekly-hero-stage.is-photo { padding: 0; }
+.weekly-hero-stage.is-photo .weekly-hero-img {
+  position: absolute; inset: 0; max-height: none; object-fit: cover; filter: none; animation: none;
+}
+.weekly-hero-fallback { width: 72px; height: 72px; fill: color-mix(in srgb, var(--text) 55%, transparent); }
+.weekly-hero-img:not([hidden]) + .weekly-hero-fallback { display: none; }
+@keyframes weekly-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+@media (prefers-reduced-motion: reduce) { .weekly-hero-img { animation: none; } }
+
+.weekly-hero-body {
+  display: flex; flex-direction: column; justify-content: center; gap: 8px;
+  padding: 20px 22px; min-width: 0;
+}
+.weekly-hero-name {
+  margin: 0; font-size: 22px; line-height: 1.2; font-weight: bold; color: var(--text);
+  overflow-wrap: anywhere;
+}
+.weekly-hero-note { margin: 0; font-size: 12px; line-height: 1.5; color: var(--text-muted); }
+.weekly-hero-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.weekly-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11px; font-weight: bold; padding: 4px 11px; border-radius: 999px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--text) 14%, transparent);
+}
+.weekly-chip[hidden] { display: none; }
+.weekly-chip svg { width: 13px; height: 13px; fill: currentColor; opacity: .8; }
+.weekly-state { color: var(--text-muted); }
+.weekly-state.is-done {
+  color: var(--green-dim);
+  background: color-mix(in srgb, var(--green-dim) 16%, transparent);
+  border-color: color-mix(in srgb, var(--green-dim) 50%, transparent);
+}
+
+.weekly-section[hidden] { display: none; }
+.weekly-section-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  padding: 0 4px 8px;
+}
+.weekly-section-note { font-size: 11px; color: var(--text-muted); }
+.weekly-cards {
+  list-style: none; margin: 0; padding: 0; counter-reset: weekly;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px;
+}
+.weekly-card {
+  counter-increment: weekly;
+  position: relative; display: flex; flex-direction: column; gap: 10px;
+  padding: 14px 14px 14px 16px; border-radius: 12px; min-width: 0;
+  background: var(--bg-panel);
+  border: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
+}
+.weekly-card-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.weekly-card-num {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 8px; flex-shrink: 0;
+  font-size: 12px; font-weight: bold; color: var(--text);
+  background: color-mix(in srgb, var(--green-dim) 26%, transparent);
+}
+.weekly-card-num::before { content: counter(weekly); }
+.weekly-kind {
+  font-size: 10px; font-weight: bold; letter-spacing: .6px; text-transform: uppercase;
+  color: var(--text-muted);
+}
+.weekly-card-text { margin: 0; font-size: 13px; line-height: 1.45; color: var(--text); }
+.weekly-room {
+  display: inline-block; padding: 0 7px; border-radius: 6px; font-weight: bold;
+  color: var(--text); background: color-mix(in srgb, var(--text) 11%, transparent);
+}
+
+/* How many of the five are done (signed in). */
+.weekly-progress { display: flex; align-items: center; gap: 10px; margin-top: 2px; }
+.weekly-progress[hidden] { display: none; }
+.weekly-progress-bar {
+  flex: 1; max-width: 240px; height: 6px; border-radius: 999px; overflow: hidden;
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+}
+.weekly-progress-bar > span {
+  display: block; height: 100%; width: 0; border-radius: inherit;
+  background: var(--green-dim); transition: width .4s ease;
+}
+.weekly-progress-text { font-size: 11px; font-weight: bold; color: var(--text-muted); white-space: nowrap; }
+
+/* A finished challenge: its number becomes a tick and the card settles back. */
+.weekly-card-done { display: none; font-size: 10px; font-weight: bold; letter-spacing: .6px; text-transform: uppercase; color: var(--green-dim); }
+.weekly-card.is-done { border-color: color-mix(in srgb, var(--green-dim) 45%, transparent); }
+.weekly-card.is-done .weekly-card-num { background: var(--green-dim); color: rgba(0, 0, 0, .82); }
+.weekly-card.is-done .weekly-card-num::before { content: none; }
+.weekly-card.is-done .weekly-card-num svg { display: block; }
+.weekly-card-num svg { display: none; width: 15px; height: 15px; fill: currentColor; }
+.weekly-card.is-done .weekly-card-done { display: inline; }
+.weekly-card.is-done .weekly-kind { display: none; }
+.weekly-card.is-done .weekly-card-text { color: var(--text-muted); }
+
+.weekly-empty {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; padding: 40px 20px; text-align: center; color: var(--text-muted);
+}
+.weekly-empty[hidden] { display: none; }
+.weekly-empty svg { width: 44px; height: 44px; fill: currentColor; opacity: .5; }
+.weekly-empty p { margin: 0; max-width: 320px; font-size: 13px; line-height: 1.5; }
+
+@media (max-width: 640px) {
+  .weekly-hero { grid-template-columns: 1fr; }
+  .weekly-hero-stage { min-height: 170px; }
+}

@@ -543,6 +543,9 @@ function withoutBackdrop(cfg) {
     getPlatformCapabilities: () => invoke('get_platform_capabilities'),
     getLinuxRuntimeStatus: (network = activeNetwork) => invoke('get_linux_runtime_status', { network }),
     pickLinuxDirectory: () => invoke('pick_linux_directory'),
+    openProtonPrefix: (network) => invoke('open_proton_prefix', { network }),
+    receosWeekly: () => invoke('receos_weekly'),
+    receosRoomPlayers: (roomId) => invoke('receos_room_players', { roomId }),
 
     // Auto-update. Only the installer the last check offered is accepted, and
     // the backend checks it against the digest GitHub published with it.
@@ -1597,6 +1600,8 @@ document.querySelectorAll('.sidebar-nav .nav-btn').forEach(btn => {
       refreshStellaFriends();
     } else if (tabName === 'chats') {
       loadChatThreads();
+    } else if (tabName === 'weekly') {
+      if (Date.now() - weeklyLoadedAt > WEEKLY_STALE_MS) loadWeekly();
     } else if (tabName === 'settings' && settingsSection === 'vanilla') {
       // They may have been changed in Vanilla's own launcher meanwhile.
       refreshVanillaSettings();
@@ -1649,7 +1654,6 @@ async function loadConfig() {
     }
     const warnings = $('row-disableWarnings')?.querySelector('.sg-desc');
     if (warnings) warnings.textContent = 'Skip optional Steam warnings. Proton and file integrity checks still apply.';
-    $('linuxRuntimeGroup').hidden = false;
   }
 
   // Defaults
@@ -1710,8 +1714,8 @@ async function loadConfig() {
   // fully-loaded config.
   applyNetworkUI(NETWORKS[config.network] ? config.network : 'radium');
   if (platformCapabilities.linux) {
-    $('linuxRuntimeNetwork').value = activeNetwork;
-    refreshLinuxRuntimeSettings();
+    $('protonNetwork').value = activeNetwork;
+    refreshProtonPage();
   }
 
   // Both install rows, not just the active network's — after applyNetworkUI so
@@ -1991,56 +1995,153 @@ async function refreshAutostartToggle() {
   } catch (e) {}
 }
 
-async function refreshLinuxRuntimeSettings() {
-  if (!platformCapabilities.linux) return;
-  const network = $('linuxRuntimeNetwork').value;
-  const settings = config.linux || {};
-  const selected = settings.networks?.[network] || {};
-  setValue('linuxSteamDir', settings.steamDir || '');
-  setValue('linuxProtonDir', selected.protonDir || '');
-  setValue('linuxCompatDataDir', selected.compatDataDir || '');
-  const status = $('linuxRuntimeStatus');
-  status.textContent = 'Checking Steam and Proton...';
-  try {
-    const result = await window.radium.getLinuxRuntimeStatus(network);
-    if ($('linuxRuntimeNetwork').value !== network) return;
-    status.textContent = result.ready
-      ? `Ready: ${result.protonDir}. Prefix: ${result.compatDataDir}. Linux gameplay validation is pending; VR is experimental.`
-      : result.error;
-  } catch (error) { status.textContent = String(error); }
+// ── Settings › Proton (Linux only) ──────────────────────────────────────
+// One network at a time, picked at the top of the page. Every control saves
+// straight into config.linux; empty fields mean "automatic" in the backend.
+
+/// Value of the Proton version menu's last entry, which opens a folder picker.
+const PROTON_OTHER = '__other__';
+
+function protonNetworkSettings(network) {
+  return config.linux?.networks?.[network] || {};
 }
 
-async function saveLinuxRuntimeSettings() {
-  const network = $('linuxRuntimeNetwork').value;
-  const updated = { ...config, linux: {
-    ...(config.linux || {}), steamDir: $('linuxSteamDir').value.trim(),
-    networks: { ...(config.linux?.networks || {}), [network]: {
-      protonDir: $('linuxProtonDir').value.trim(), compatDataDir: $('linuxCompatDataDir').value.trim(),
-    } },
-  } };
+/// Rebuilds a custom select's menu after its <option>s were replaced.
+function rebuildCselectOptions(select) {
+  const parts = cselectParts.get(select);
+  if (!parts) return;
+  parts.menu.replaceChildren(...[...select.options].map(opt => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'nav-btn cselect-option';
+    item.setAttribute('role', 'option');
+    item.dataset.value = opt.value;
+    item.textContent = opt.textContent;
+    item.addEventListener('click', () => chooseCselectOption(select, opt.value));
+    return item;
+  }));
+  syncCselect(select);
+}
+
+function setProtonStatus(state, title, detail = '') {
+  $('protonStatus').dataset.state = state;
+  $('protonStatusTitle').textContent = title;
+  $('protonStatusDetail').textContent = detail;
+}
+
+/// Path names are long; the folder rows wrap them. A path is never put into
+/// innerHTML.
+function fillProtonVersions(status, selectedDir) {
+  const select = $('protonVersion');
+  const stable = (status.installedProtons || []).filter(p => p.stable);
+  const newest = stable[0]?.name;
+  const options = [['', newest ? `Automatic (${newest})` : 'Automatic']];
+  for (const tool of status.installedProtons || []) options.push([tool.path, tool.name]);
+  if (selectedDir && !options.some(([value]) => value === selectedDir)) {
+    options.push([selectedDir, selectedDir.split('/').filter(Boolean).pop() || selectedDir]);
+  }
+  options.push([PROTON_OTHER, 'Other folder...']);
+  select.replaceChildren(...options.map(([value, label]) => new Option(label, value)));
+  rebuildCselectOptions(select);
+  select.value = selectedDir || '';
+}
+
+let protonRefreshSeq = 0;
+async function refreshProtonPage() {
+  if (!platformCapabilities.linux) return;
+  const seq = ++protonRefreshSeq;
+  const network = $('protonNetwork').value;
+  const own = protonNetworkSettings(network);
+  setToggle('tgl-protonOpenGl', own.opengl === true);
+  setProtonStatus('checking', 'Checking Steam and Proton...');
+  let status;
   try {
-    if (!await window.radium.saveConfig(updated)) throw new Error('Could not save runtime settings. Close the game and finish current file operations first.');
+    status = await window.radium.getLinuxRuntimeStatus(network);
+  } catch (error) {
+    status = { ready: false, error: String(error) };
+  }
+  if (seq !== protonRefreshSeq) return;
+
+  const steamChosen = !!config.linux?.steamDir;
+  $('protonSteamPath').textContent = status.steamDir || config.linux?.steamDir || 'Steam not found';
+  $('protonSteamNote').textContent = steamChosen
+    ? 'Chosen by you. Shared by every revival.'
+    : 'Found automatically. Shared by every revival.';
+  $('protonSteamReset').disabled = !steamChosen;
+
+  fillProtonVersions(status, own.protonDir || '');
+  $('protonPrefixPath').textContent = status.compatDataDir || status.defaultCompatDataDir || '';
+  $('protonPrefixReset').disabled = !own.compatDataDir;
+
+  if (status.ready) {
+    // Steam's folder name ("SteamLinuxRuntime_4") as Steam's store names it.
+    const runtimeName = (status.runtimeName || '').replace(/^SteamLinuxRuntime_?/, 'Steam Linux Runtime ').trim();
+    const runtime = runtimeName ? ` with ${runtimeName}` : '';
+    setProtonStatus('ready', 'Ready to play', `${status.protonName}${runtime}${own.opengl ? ', OpenGL mode' : ''}.`);
+  } else {
+    setProtonStatus('error', 'Not ready', status.error || 'Steam or Proton could not be found.');
+  }
+}
+
+/// Saves one change to config.linux, then checks the result again.
+async function saveProtonSettings(change) {
+  const network = $('protonNetwork').value;
+  const linux = config.linux || {};
+  const updated = { ...config, linux: { ...linux, networks: { ...(linux.networks || {}) } } };
+  change(updated.linux, network);
+  showAutosaveIndicator('saving', 'Saving...');
+  let ok = false;
+  try { ok = await window.radium.saveConfig(updated); } catch (e) { console.error(e); }
+  if (ok) {
     config = updated;
     showAutosaveIndicator('saved', '✓ Saved');
-  } catch (error) { toast(String(error), 'error', 6000); }
-  await refreshLinuxRuntimeSettings();
+  } else {
+    showAutosaveIndicator('error', 'Not saved');
+    toast('Close the game and wait for downloads to finish before changing Proton settings.', 'error', 6000);
+  }
+  await refreshProtonPage();
 }
 
-$('linuxRuntimeNetwork')?.addEventListener('change', refreshLinuxRuntimeSettings);
-for (const id of ['linuxSteamDir', 'linuxProtonDir', 'linuxCompatDataDir']) {
-  $(id)?.addEventListener('change', saveLinuxRuntimeSettings);
-}
-document.querySelectorAll('[data-linux-directory]').forEach(button => {
-  button.addEventListener('click', async () => {
-    try {
-      const path = await window.radium.pickLinuxDirectory();
-      if (!path) return;
-      setValue(button.dataset.linuxDirectory, path);
-      await saveLinuxRuntimeSettings();
-    } catch (error) { toast(String(error), 'error'); }
+function setProtonNetworkField(field, value) {
+  return saveProtonSettings((linux, network) => {
+    linux.networks[network] = { ...(linux.networks[network] || {}), [field]: value };
   });
+}
+
+async function pickProtonFolder() {
+  try { return await window.radium.pickLinuxDirectory(); }
+  catch (error) { toast(String(error), 'error'); return null; }
+}
+
+$('protonNetwork')?.addEventListener('change', refreshProtonPage);
+$('protonCheck')?.addEventListener('click', refreshProtonPage);
+$('protonVersion')?.addEventListener('change', async () => {
+  const select = $('protonVersion');
+  let dir = select.value;
+  if (dir === PROTON_OTHER) {
+    dir = await pickProtonFolder();
+    if (!dir) { select.value = protonNetworkSettings($('protonNetwork').value).protonDir || ''; return; }
+  }
+  await setProtonNetworkField('protonDir', dir);
 });
-$('linuxRuntimeCheck')?.addEventListener('click', refreshLinuxRuntimeSettings);
+$('tgl-protonOpenGl')?.addEventListener('click', () => {
+  $('tgl-protonOpenGl').classList.toggle('on');
+  setProtonNetworkField('opengl', getToggle('tgl-protonOpenGl'));
+});
+$('protonSteamChange')?.addEventListener('click', async () => {
+  const dir = await pickProtonFolder();
+  if (dir) await saveProtonSettings(linux => { linux.steamDir = dir; });
+});
+$('protonSteamReset')?.addEventListener('click', () => saveProtonSettings(linux => { linux.steamDir = ''; }));
+$('protonPrefixChange')?.addEventListener('click', async () => {
+  const dir = await pickProtonFolder();
+  if (dir) await setProtonNetworkField('compatDataDir', dir);
+});
+$('protonPrefixReset')?.addEventListener('click', () => setProtonNetworkField('compatDataDir', ''));
+$('protonPrefixOpen')?.addEventListener('click', async () => {
+  try { await window.radium.openProtonPrefix($('protonNetwork').value); }
+  catch (error) { toast(String(error), 'info', 5000); }
+});
 $('tgl-launchAtStartup')?.addEventListener('click', async () => {
   const el = $('tgl-launchAtStartup');
   if (el.dataset.pending === 'true') return;
@@ -2128,6 +2229,7 @@ function syncLaunchOptionLabel() {
 let settingsSection = 'general';
 
 function settingsSectionAvailable(btn) {
+  if (btn.classList.contains('linux-only')) return platformCapabilities.linux === true;
   if (btn.classList.contains('network-only-vanilla')) return activeNetwork === 'vanilla';
   if (btn.classList.contains('network-only-stella')) return activeNetwork === 'stella';
   if (btn.classList.contains('network-only-accounts')) return ['vanilla', 'stella', 'receos'].includes(activeNetwork);
@@ -2248,7 +2350,7 @@ const HOME_SECTIONS = ['status', 'friends', 'rooms'];
 const HOME_SECTION_INFO = {
   status:  { label: 'Status',            desc: 'Servers, players online and the game client.' },
   friends: { label: 'Friends',           desc: 'Who is online, with JOIN. Off puts them in a tab of their own.' },
-  rooms:   { label: 'Popular right now', desc: "The network's busiest rooms at the moment." },
+  rooms:   { label: 'Popular right now', desc: "The revival's busiest rooms at the moment." },
 };
 
 /// Home's order and hidden list, cleaned up: known names, each once, every
@@ -2572,7 +2674,7 @@ function applyHomeBanner() {
   if (desc) {
     desc.textContent = image
       ? `Your own picture, behind the logo on ${name}.`
-      : `${name}'s own art. Each network can have a picture of your own.`;
+      : `${name}'s own art. Each revival can have a picture of your own.`;
   }
   const preview = $('bannerPreview');
   if (preview) {
@@ -3381,7 +3483,7 @@ async function checkInstall() {
   // every settings autosave, and the folder sticks around until the user deletes it.
   if (result?.orphanedClientDir && !orphanedDirReported) {
     orphanedDirReported = true;
-    addLog(`Found a client in the wrong network's folder. Moved it aside to ${result.orphanedClientDir} — you can delete that folder.`, 'warn', 'install');
+    addLog(`Found a client in the wrong revival's folder. Moved it aside to ${result.orphanedClientDir} — you can delete that folder.`, 'warn', 'install');
   }
 
   if (isInstalled) {
@@ -6379,6 +6481,14 @@ let trayRefreshedAt = 0;
 /// it now counts as looking: the servers, the player count and Stella's
 /// friends are asked for at once, and the panel redraws as the answers land.
 /// Not more than every ten seconds, for a panel opened and closed in a row.
+// On Linux the panel holds a pointer grab instead of focus (see
+// grab_pointer_for_panel in background.rs), and a click on this window still
+// lands here rather than on the panel, so it is put away from here. On
+// Windows that click takes the panel's focus away, which closes it already.
+document.addEventListener('mousedown', () => {
+  if (trayPanelOpen && platformCapabilities.linux) window.__TAURI__.core.invoke('tray_menu_hide').catch(() => {});
+}, true);
+
 window.radium?.onTrayPanel?.((open) => {
   trayPanelOpen = open;
   syncStellaInUse();
@@ -6447,7 +6557,12 @@ window.radium?.onGameState((data) => {
     setGameRunning(false);
     const code = data.exitCode !== undefined ? ` (exit ${data.exitCode})` : '';
     addLog(`Game closed${code}`, 'info', 'game');
-    toast('Game closed.', 'info', 2000);
+    if (data.hint) {
+      addLog(data.hint, 'warn', 'game');
+      toast(data.hint, 'warn', 10000);
+    } else {
+      toast('Game closed.', 'info', 2000);
+    }
     stellaRecheckAfterGame();
   } else if (data.running === true) {
     setGameRunning(true);
@@ -6754,13 +6869,13 @@ async function setNetwork(name) {
   // it is no longer pointing at.
   if (isDownloading || isPaused) {
     toast(clientTask
-      ? 'Finish or cancel the file check before switching networks.'
-      : 'Finish or cancel the current download before switching networks.', 'warn', 4000);
+      ? 'Finish or cancel the file check before switching revivals.'
+      : 'Finish or cancel the current download before switching revivals.', 'warn', 4000);
     closeNetworkMenu();
     return;
   }
   if (isGameRunning || isGameLaunching) {
-    toast('Close the game before switching networks.', 'warn', 4000);
+    toast('Close the game before switching revivals.', 'warn', 4000);
     closeNetworkMenu();
     return;
   }
@@ -6768,11 +6883,11 @@ async function setNetwork(name) {
   closeNetworkMenu();
   applyNetworkUI(name);
   if (platformCapabilities.linux) {
-    $('linuxRuntimeNetwork').value = name;
-    refreshLinuxRuntimeSettings();
+    $('protonNetwork').value = name;
+    refreshProtonPage();
   }
   pulseNetworkSwitcher();
-  addLog(`Switched network to ${networkInfo().label} (${networkInfo().site}).`, 'ok');
+  addLog(`Switched revival to ${networkInfo().label} (${networkInfo().site}).`, 'ok');
 
   // Persist. Written directly rather than through autoSaveSettings() so the
   // switch survives even if the user never touches the settings form.
@@ -6858,8 +6973,8 @@ async function setNetwork(name) {
   } else if (openTab === 'tab-friends' && !stellaLike()) {
     // Likewise FRIENDS, which is Stella's and Rec EOS's.
     switchTab('home');
-  } else if (openTab === 'tab-chats' && activeNetwork !== 'receos') {
-    // And CHATS, Rec EOS's.
+  } else if ((openTab === 'tab-chats' || openTab === 'tab-weekly') && activeNetwork !== 'receos') {
+    // And CHATS and WEEKLY, Rec EOS's.
     switchTab('home');
   } else if (openTab === 'tab-home') {
     loadHomeRooms();
@@ -10340,7 +10455,7 @@ async function init() {
   // Check for launcher updates first on startup (run in background, do not block initialization)
   checkForLauncherUpdate();
 
-  addLog(`Network: ${networkInfo().label} (${networkInfo().site})`, 'info');
+  addLog(`Revival: ${networkInfo().label} (${networkInfo().site})`, 'info');
   // Radium's own setting; the server check logs every network's address.
   if (activeNetwork === 'radium') addLog(`API: ${config.apiUrl}`, 'info');
   if (activeNetwork === 'vanilla') {
@@ -12000,8 +12115,8 @@ $('btnPhotoDetailBack')?.addEventListener('click', () => {
 
 /// The "● 7" corner badge on a room card: players in the room right now, in
 /// public and private copies of it together (the split is in its accessible
-/// name; no hover tooltips). Only Stella's rows carry the counts, and an empty
-/// room gets no badge.
+/// name; no hover tooltips). Stella's and Rec EOS's rows carry the counts, and
+/// an empty room gets no badge.
 function liveBadgeHtml(room) {
   const pub = Number(room?.LivePlayers) || 0;
   const priv = Number(room?.PrivatePlayers) || 0;
@@ -12031,6 +12146,147 @@ function setRoomLive(players, priv = null) {
   el.lastChild.textContent = text;
 }
 
+// ── Weekly (Rec EOS) ─────────────────────────────────────────────────────
+// The week's challenges and the skin for finishing all of them, from the Rec
+// EOS server (the plan the game itself gets). Progress on each challenge stays
+// in the game; signed in, the server says whether the set is finished.
+
+const WEEKLY_STALE_MS = 5 * 60_000;
+let weeklyLoadedAt = 0;
+let weeklyEndsAt = 0;
+let weeklyTimer = null;
+
+/// "3 days 4 hours", "5 hours 12 minutes", "8 minutes".
+function weeklyCountdown(ms) {
+  const minutes = Math.max(0, Math.floor(ms / 60_000));
+  const days = Math.floor(minutes / 1440), hours = Math.floor((minutes % 1440) / 60), mins = minutes % 60;
+  const part = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  if (days > 0) return `${part(days, 'day')} ${part(hours, 'hour')}`;
+  if (hours > 0) return `${part(hours, 'hour')} ${part(mins, 'minute')}`;
+  return part(Math.max(mins, 1), 'minute');
+}
+
+function showWeeklyResets() {
+  const chip = $('weeklyResetsChip'), text = $('weeklyResetsText');
+  if (!chip || !weeklyEndsAt) return;
+  const left = weeklyEndsAt - Date.now();
+  text.textContent = left <= 0 ? 'New week starting, refresh' : `Resets in ${weeklyCountdown(left)}`;
+  chip.hidden = false;
+}
+
+/// The reward's picture (assets/weekly/<asset>.webp, from the wiki's item
+/// gallery). A picture with its own backdrop fills the stage; one cut out
+/// floats on it; none, or one that fails, leaves the gift icon.
+function showWeeklySkinImage(asset) {
+  const img = $('weeklySkinImg'), stage = img?.parentElement;
+  if (!img) return;
+  stage.classList.remove('is-photo');
+  img.hidden = true;
+  img.onload = img.onerror = null;
+  img.removeAttribute('src');
+  if (!/^[A-Za-z0-9_]+$/.test(asset || '')) return;
+  img.onload = () => {
+    try {
+      const c = document.createElement('canvas');
+      c.width = c.height = 1;
+      const g = c.getContext('2d');
+      g.drawImage(img, 0, 0, 1, 1, 0, 0, 1, 1);
+      stage.classList.toggle('is-photo', g.getImageData(0, 0, 1, 1).data[3] > 200);
+    } catch {}
+    img.hidden = false;
+  };
+  img.onerror = () => { img.hidden = true; };
+  img.src = `assets/weekly/${asset}.webp`;
+}
+
+/// A challenge's text with its ^Room written as the room's name, emphasised.
+function weeklyText(description) {
+  const frag = document.createDocumentFragment();
+  const parts = String(description || '').split(/(\^[A-Za-z0-9_]+)/);
+  for (const part of parts) {
+    if (!part) continue;
+    if (part.startsWith('^')) {
+      const name = document.createElement('span');
+      name.className = 'weekly-room';
+      name.textContent = part.slice(1).replace(/([a-z])([A-Z])/g, '$1 $2');
+      frag.append(name);
+    } else frag.append(part);
+  }
+  return frag;
+}
+
+async function loadWeekly() {
+  if (activeNetwork !== 'receos') return;
+  const status = $('weeklyResets'), empty = $('weeklyEmpty');
+  const reward = $('weeklyReward'), group = $('weeklyChallengesGroup');
+  if (!weeklyLoadedAt) { empty.hidden = false; status.textContent = "Loading this week's challenges..."; }
+  let res = null;
+  try { res = await window.radium?.receosWeekly(); } catch (e) { res = { success: false, error: String(e) }; }
+  if (activeNetwork !== 'receos') return;
+  if (!res?.success) {
+    weeklyLoadedAt = 0;
+    reward.hidden = group.hidden = true;
+    empty.hidden = false;
+    status.textContent = "This week's challenges couldn't be loaded. Check your connection and refresh.";
+    return;
+  }
+  weeklyLoadedAt = Date.now();
+  weeklyEndsAt = Date.parse(res.endAt) || 0;
+  showWeeklyResets();
+  clearInterval(weeklyTimer);
+  weeklyTimer = setInterval(showWeeklyResets, 30_000);
+
+  $('weeklySkin').textContent = res.skin?.name || 'A weekly skin';
+  showWeeklySkinImage(res.skin?.asset);
+  const state = $('weeklyState');
+  state.hidden = res.completed == null;
+  state.classList.toggle('is-done', res.completed === true);
+  state.textContent = res.completed ? 'Earned' : 'Not earned yet';
+  $('weeklySkinNote').textContent = res.completed
+    ? "You finished this week's challenges. The skin is in your inventory."
+    : res.completed === false
+      ? "Finish all of this week's challenges in game to earn it."
+      : "Finish all of this week's challenges in game to earn it. Log in to see whether you have.";
+
+  const list = $('weeklyChallenges');
+  list.replaceChildren(...(res.challenges || []).map(c => {
+    const li = document.createElement('li');
+    li.className = 'weekly-card';
+    const top = document.createElement('div');
+    top.className = 'weekly-card-top';
+    const num = document.createElement('span');
+    num.className = 'weekly-card-num';
+    num.setAttribute('aria-hidden', 'true');
+    num.innerHTML = '<svg viewBox="0 0 24 24" focusable="false"><path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>';
+    const kind = document.createElement('span');
+    kind.className = 'weekly-kind';
+    kind.textContent = c.kind === 'quest' ? 'Quest' : 'Game';
+    const doneTag = document.createElement('span');
+    doneTag.className = 'weekly-card-done';
+    doneTag.textContent = 'Done';
+    top.append(num, kind, doneTag);
+    li.classList.toggle('is-done', c.done === true);
+    const text = document.createElement('p');
+    text.className = 'weekly-card-text';
+    text.append(weeklyText(c.description || c.name));
+    li.append(top, text);
+    return li;
+  }));
+  // Progress: each challenge's done is null when nobody is signed in.
+  const challenges = res.challenges || [];
+  const known = challenges.length > 0 && challenges.every(c => typeof c.done === 'boolean');
+  const finished = challenges.filter(c => c.done === true).length;
+  $('weeklyProgress').hidden = !known;
+  $('weeklyProgressFill').style.width = known ? `${Math.round(finished / challenges.length * 100)}%` : '0';
+  $('weeklyProgressText').textContent = known ? `${finished} of ${challenges.length} done` : '';
+  $('weeklyHint').textContent = known ? 'Ticked off as you finish them in game' : 'Log in to see which you have finished';
+  reward.hidden = false;
+  group.hidden = !list.children.length;
+  empty.hidden = true;
+}
+
+$('btnWeeklyRefresh')?.addEventListener('click', loadWeekly);
+
 async function showRoomDetails(room) {
   const list = $('roomsListView');
   const detail = $('roomsDetailView');
@@ -12038,10 +12294,15 @@ async function showRoomDetails(room) {
   const seq = ++roomDetailSeq;
 
   // What the list row knew, then a fresh count: the page may have sat open.
-  setRoomLive(activeNetwork === 'stella' ? (room.LivePlayers ?? null) : null, room.PrivatePlayers ?? null);
+  const counted = activeNetwork === 'stella' || activeNetwork === 'receos';
+  setRoomLive(counted ? (room.LivePlayers ?? null) : null, room.PrivatePlayers ?? null);
   if (activeNetwork === 'stella' && (room.RoomId || room.roomId)) {
     window.radium?.stellaRoomPlayers(room.RoomId || room.roomId)
       .then(r => { if (seq === roomDetailSeq && r?.players != null) setRoomLive(r.players, r.private); })
+      .catch(() => {});
+  } else if (activeNetwork === 'receos' && room.RoomId) {
+    window.radium?.receosRoomPlayers(room.RoomId)
+      .then(r => { if (seq === roomDetailSeq && r?.players != null) setRoomLive(r.players); })
       .catch(() => {});
   }
   

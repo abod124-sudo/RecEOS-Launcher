@@ -3355,6 +3355,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "gio",
+ "gtk",
  "image",
  "libc",
  "minisign-verify",

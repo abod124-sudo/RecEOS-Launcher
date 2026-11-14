@@ -225,15 +225,17 @@ fn client_dirs(app: &tauri::AppHandle) -> Vec<String> {
 /// broad folder that also holds official Rec Room.
 pub(crate) fn vanilla_launcher_game_dir() -> Option<String> {
     #[cfg(target_os = "linux")]
-    { return crate::linux::vanilla_game_dir(); }
+    {
+        crate::linux::vanilla_game_dir()
+    }
     #[cfg(not(target_os = "linux"))]
     {
-    let data = std::path::PathBuf::from(std::env::var_os("APPDATA")?).join("VanillaLauncher");
-    let settings = std::fs::read_to_string(data.join("settings.json")).ok();
-    vanilla_game_candidates(settings.as_deref(), &data)
-        .into_iter()
-        .next()
-        .map(|dir| dir.to_string_lossy().to_string())
+        let data = std::path::PathBuf::from(std::env::var_os("APPDATA")?).join("VanillaLauncher");
+        let settings = std::fs::read_to_string(data.join("settings.json")).ok();
+        vanilla_game_candidates(settings.as_deref(), &data)
+            .into_iter()
+            .next()
+            .map(|dir| dir.to_string_lossy().to_string())
     }
 }
 
@@ -1212,9 +1214,12 @@ fn launch_game_impl(
             if network == config::Network::RecEos || file_lower == "recroom.exe" {
                 args.push(mode_arg.to_string());
             }
-            if let Some(target) = join_arg.as_ref().or(room_arg.as_ref()) { args.push(target.clone()); }
+            if let Some(target) = join_arg.as_ref().or(room_arg.as_ref()) {
+                args.push(target.clone());
+            }
             crate::linux::launch(&app, network, exe, &args)?;
         }
+        crate::linux::note_launch(network);
         0u32
     };
     #[cfg(not(target_os = "linux"))]
@@ -1424,7 +1429,17 @@ pub fn start_game_monitor(app: tauri::AppHandle) {
             let seen = GAME_SEEN_SINCE_LAUNCH.load(Ordering::SeqCst);
             if should_emit_game_state(running, previous, seen, grace) {
                 GAME_RUNNING_STATE.store(running, Ordering::SeqCst);
-                let _ = app.emit("game-state", json!({ "running": running }));
+                #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+                let mut state = json!({ "running": running });
+                // On Linux a game that dies seconds after starting under
+                // Proton otherwise looks like a normal close; say why.
+                #[cfg(target_os = "linux")]
+                if !running {
+                    if let Some(hint) = crate::linux::early_exit_hint() {
+                        state["hint"] = json!(hint);
+                    }
+                }
+                let _ = app.emit("game-state", state);
             }
         }
     });

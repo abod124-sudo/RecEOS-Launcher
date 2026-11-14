@@ -448,7 +448,7 @@ pub fn launch(app: &tauri::AppHandle, exe: &Path, work_dir: &str, args: &[&str])
     if !helper.is_file() { return Err("The Proton helper is missing. Reinstall the Linux package, or prepare the helper before a development build.".into()); }
     let request = json!({"version": 1, "exe": runtime.windows_path(exe)?,
         "patch": runtime.windows_path(&patch)?, "sha256": cfg.stella.patch_sha256, "args": args});
-    let mut cmd = runtime.command("run")?;
+    let mut cmd = runtime.command(crate::linux::LAUNCH_VERB)?;
     runtime.expose_paths(&mut cmd, &[Path::new(work_dir), patch.parent().ok_or("Patch directory missing")?])?;
     cmd.env("STEAM_COMPAT_INSTALL_PATH", work_dir);
     let helper = crate::linux::HelperFiles(crate::linux::stage_helper(&runtime, &helper)?);

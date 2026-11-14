@@ -36,7 +36,7 @@ static LOADED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::ne
 
 /// The server. In a debug build `RECEOS_API_ROOT` may point at a local test
 /// server (http://127.0.0.1:...); a release build always uses the real one.
-fn api_root() -> String {
+pub(crate) fn api_root() -> String {
     #[cfg(debug_assertions)]
     if let Ok(root) = std::env::var("RECEOS_API_ROOT") {
         let root = root.trim_end_matches('/').to_string();
@@ -482,6 +482,39 @@ pub async fn receos_chat_read(app: AppHandle, thread_id: i64, message_id: i64) -
 }
 
 // ─── Rooms ──────────────────────────────────────────────────────────────────
+
+/// Players in a Rec EOS room now: `{ players }`, null when not known.
+#[tauri::command]
+pub async fn receos_room_players(room_id: i64) -> Value {
+    crate::receos_api::room_players(room_id).await
+}
+
+/// This week's challenges and their reward skin. Signed in, it also says
+/// whether the player has finished this week's set (`completed`); otherwise,
+/// or if the signed-in call fails, the public version with `completed` null.
+#[tauri::command]
+pub async fn receos_weekly(app: AppHandle) -> Value {
+    let data = match signed_in(&app) {
+        true => match call(&app, reqwest::Method::GET, "/launcher/weekly", None).await {
+            Ok(d) => Ok(d),
+            Err(_) => crate::receos_api::weekly().await,
+        },
+        false => crate::receos_api::weekly().await,
+    };
+    match data {
+        Ok(d) if d["challenges"].is_array() => json!({
+            "success": true,
+            "week": d["week"],
+            "startAt": d["startAt"],
+            "endAt": d["endAt"],
+            "challenges": d["challenges"],
+            "skin": d["skin"],
+            "completed": d["completed"],
+        }),
+        Ok(_) => json!({ "success": false, "error": "Rec EOS has no weekly challenges to show." }),
+        Err(e) => json!({ "success": false, "error": e }),
+    }
+}
 
 /// `{ Cheered, Favorited }` for a room, as `stella_room_interaction` answers.
 #[tauri::command]

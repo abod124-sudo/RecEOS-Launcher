@@ -208,6 +208,29 @@ fn open_tray_menu(app: &AppHandle, x: f64, y: f64) {
     let _ = app.emit_to("main", "tray-panel", true);
 }
 
+/// The tray menu's "Rec EOS Launcher…" item on Linux: the panel, opened at
+/// the pointer, which is on the item just picked, by the tray icon. Where the
+/// desktop doesn't tell (a Wayland session), the top-right corner of the
+/// screen, where most Linux desktops keep their tray.
+fn open_panel_at_pointer(app: &AppHandle) {
+    let at = app
+        .cursor_position()
+        .ok()
+        .filter(|p| p.x.is_finite() && p.y.is_finite() && (p.x, p.y) != (0.0, 0.0))
+        .map(|p| (p.x, p.y))
+        .or_else(|| {
+            let monitor = app.primary_monitor().ok().flatten()?;
+            let area = monitor.work_area();
+            Some((
+                f64::from(area.position.x) + f64::from(area.size.width) - 1.0,
+                f64::from(area.position.y),
+            ))
+        });
+    if let Some((x, y)) = at {
+        open_tray_menu(app, x, y);
+    }
+}
+
 // ── Painting the panel once, off screen ──────────────────────────────────
 //
 // The first panel of a session took 50-90 ms longer to paint than every one
@@ -426,8 +449,78 @@ pub fn tray_menu_show(app: AppHandle, width: f64, height: f64, frost: bool) -> R
         win.show().map_err(|e| e.to_string())?;
         let _ = win.set_always_on_top(true);
         let _ = win.set_focus();
+        #[cfg(target_os = "linux")]
+        grab_pointer_for_panel(&win);
     }
     Ok(TrayPlacement { frost: backdrop, above })
+}
+
+/// Linux window managers refuse focus to a window that asks for it without a
+/// user action of its own (focus-stealing prevention: the tray item's click
+/// happened in the desktop's panel, not here), so the panel never heard that
+/// it lost focus and a click elsewhere left it up (measured on XFCE
+/// 2026-11-14; asking with the X server's time didn't help). So it does what
+/// GTK's own pop-up menus do: grabs the pointer while it is up. A click
+/// outside it is then reported to it, and closes it. The grab ends when the
+/// window is hidden. Clicks on the launcher's own window still go there
+/// (`owner_events`), and the page closes the panel for those (app.js).
+#[cfg(target_os = "linux")]
+fn grab_pointer_for_panel(win: &tauri::WebviewWindow) {
+    static WATCHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let w = win.clone();
+    let _ = win.run_on_main_thread(move || {
+        use gtk::gdk::prelude::*;
+        use gtk::prelude::*;
+        let Ok(window) = w.gtk_window() else { return };
+        if !WATCHING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            let app = w.app_handle().clone();
+            // `event`, not `button-press-event`: it is emitted first, and the
+            // windowing layer's own press handler stops the latter.
+            window.connect_event(move |widget, event| {
+                if event.event_type() == gtk::gdk::EventType::ButtonPress {
+                    let (x, y) = event.coords().unwrap_or((0.0, 0.0));
+                    let size = widget.allocation();
+                    if x < 0.0 || y < 0.0 || x >= f64::from(size.width()) || y >= f64::from(size.height()) {
+                        let _ = app.emit_to(TRAY_MENU_LABEL, "tray-menu-dismiss", ());
+                    }
+                }
+                gtk::glib::Propagation::Proceed
+            });
+            // A grab needs the window on screen, which comes a moment after
+            // `show` (and the desktop's own menu may still hold the pointer
+            // as it closes), so it is taken once mapped, retried briefly.
+            window.connect_map_event(|widget, _| {
+                let widget = widget.clone();
+                let mut tries = 0;
+                gtk::glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+                    tries += 1;
+                    let grabbed = widget.window().is_some_and(|gdk_window| {
+                        // A grab reports only the events the window selects,
+                        // and the webview's toplevel doesn't select presses.
+                        gdk_window.set_events(gdk_window.events() | gtk::gdk::EventMask::BUTTON_PRESS_MASK);
+                        gdk_window.display().default_seat().is_some_and(|seat| {
+                            let status = seat.grab(
+                                &gdk_window,
+                                gtk::gdk::SeatCapabilities::ALL_POINTING,
+                                true,
+                                None,
+                                None,
+                                None,
+                            );
+                            status == gtk::gdk::GrabStatus::Success
+                        })
+                    });
+                    if grabbed || tries >= 20 || !widget.is_visible() {
+                        gtk::glib::ControlFlow::Break
+                    } else {
+                        gtk::glib::ControlFlow::Continue
+                    }
+                });
+                gtk::glib::Propagation::Proceed
+            });
+        }
+        window.present();
+    });
 }
 
 #[cfg(windows)]
@@ -502,6 +595,7 @@ fn on_menu(app: &AppHandle, id: &str) {
     };
     match id {
         "open" => show_main(app),
+        "panel" => open_panel_at_pointer(app),
         "quit" => app.exit(0),
         "stop" => { crate::game::kill_game(app.clone()); }
         // Play stays in the tray, like Steam's game entries: the page reveals
@@ -551,22 +645,34 @@ fn on_menu(app: &AppHandle, id: &str) {
 }
 
 pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
+    // Linux tray icons (StatusNotifierItem / AppIndicator) report no clicks:
+    // a click always opens a native menu, drawn by the desktop. So the panel
+    // Windows opens on a right-click is that menu's first item here, opened
+    // where the pointer is when it is picked — next to the icon. The other
+    // items are the two a panel that fails to appear must not hide.
     #[cfg(target_os = "linux")]
     {
-        use tauri::menu::{Menu, MenuItem};
-        let mut items = Vec::new();
-        for (id, label) in [("open", "Open Rec EOS Launcher"), ("play", "Play"), ("stop", "Stop game"),
-            ("network:receos", "Rec EOS"), ("network:radium", "Radium"),
-            ("network:vanilla", "Vanilla"), ("network:stella", "Stella"), ("quit", "Quit")] {
-            items.push(MenuItem::with_id(app, id, label, true, None::<&str>)?);
+        use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+        let menu = Menu::with_items(
+            app,
+            &[
+                &MenuItem::with_id(app, "panel", "Rec EOS Launcher…", true, None::<&str>)?,
+                &MenuItem::with_id(app, "open", "Open window", true, None::<&str>)?,
+                &PredefinedMenuItem::separator(app)?,
+                &MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?,
+            ],
+        )?;
+        let mut tray = TrayIconBuilder::with_id("main-tray")
+            .tooltip("Rec EOS Launcher")
+            .menu(&menu)
+            .on_menu_event(|app, event| on_menu(app, event.id().as_ref()));
+        if let Some(icon) = app.default_window_icon() {
+            tray = tray.icon(icon.clone());
         }
-        let menu = Menu::new(app)?;
-        for item in &items { menu.append(item)?; }
-        let mut tray = TrayIconBuilder::with_id("main-tray").tooltip("Rec EOS Launcher")
-            .menu(&menu).on_menu_event(|app, event| on_menu(app, event.id().as_ref()));
-        if let Some(icon) = app.default_window_icon() { tray = tray.icon(icon.clone()); }
         tray.build(app)?;
         TRAY_AVAILABLE.store(true, Ordering::Relaxed);
+        // Made now, hidden, so the first open doesn't wait for a webview.
+        let _ = tray_menu_window(app);
         return Ok(());
     }
     let mut tray = TrayIconBuilder::with_id("main-tray")
