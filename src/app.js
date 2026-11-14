@@ -2325,6 +2325,8 @@ function showSettingsSection(name, { focus = false } = {}) {
   }
   if (focus) btn.focus();
   if (settingsSection === 'vanilla' && changed) refreshVanillaSettings();
+  // Steam or a Proton may have been installed since the last check.
+  if (settingsSection === 'proton' && changed && !geInstalling) refreshProtonPage();
 }
 
 // ── Vanilla's launcher settings (Settings → Vanilla) ────────────────────
