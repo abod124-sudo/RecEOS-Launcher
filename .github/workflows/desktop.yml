@@ -154,7 +154,7 @@ jobs:
       - name: Install desktop test dependencies
         timeout-minutes: 10
         run: |
-          pacman -Syu --noconfirm --needed git ca-certificates python python-dbus python-gobject webkit2gtk-4.1 gtk3 libayatana-appindicator libnotify xdg-utils xorg-server-xvfb xorg-xauth dunst openssl weston xorg-xwayland mesa desktop-file-utils gst-plugins-base gst-plugins-good pulseaudio
+          pacman -Syu --noconfirm --needed git ca-certificates python python-dbus python-gobject webkit2gtk-4.1 webkitgtk-6.0 gtk3 libayatana-appindicator libnotify xdg-utils xorg-server-xvfb xorg-xauth dunst openssl weston xorg-xwayland mesa desktop-file-utils gst-plugins-base gst-plugins-good pulseaudio
           if ! getent passwd 1000 >/dev/null 2>&1; then useradd --create-home --uid 1000 validation; fi
       - uses: actions/download-artifact@v8
         with:
@@ -172,8 +172,9 @@ jobs:
       - name: X11 and Wayland desktop integration
         shell: bash
         run: |
-          # Arch ships WebKitWebDriver outside PATH, so hand tauri-driver its path.
-          native=$(pacman -Qlq webkit2gtk-4.1 | grep '/WebKitWebDriver$' | head -1)
+          # Arch's webkit2gtk-4.1 has no WebKitWebDriver; webkitgtk-6.0 carries
+          # it (it drives any WebKitGTK app). Hand tauri-driver its path.
+          native=$(command -v WebKitWebDriver || pacman -Qlq webkitgtk-6.0 webkit2gtk-4.1 | grep '/WebKitWebDriver$' | head -1)
           test -x "$native"
           echo "WebKitWebDriver: $native"
           user=$(getent passwd 1000 | cut -d: -f1)
