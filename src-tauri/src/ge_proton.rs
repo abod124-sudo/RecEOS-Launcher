@@ -5,7 +5,7 @@
 //! version is pinned rather than "latest": GE-Proton11-12 is built on Proton
 //! 11, the Proton Rec EOS was confirmed to start under, and its archive is
 //! checked against a SHA-512 written here, so a replaced release asset is
-//! refused instead of unpacked. To move to a newer GE-Proton, change all four
+//! refused instead of unpacked. To move to a newer GE-Proton, change all five
 //! constants together (the hash is in the release's `.sha512sum` asset).
 //!
 //! It goes where Steam keeps custom tools, `<Steam>/compatibilitytools.d`
@@ -19,6 +19,8 @@ use serde_json::json;
 use tauri::Emitter;
 
 pub const GE_PROTON_TAG: &str = "GE-Proton11-12";
+/// The archive's top folder; installed under [`GE_PROTON_TAG`].
+const ARCHIVE_DIR: &str = "GE-Proton11-12-x86_64";
 const ARCHIVE_URL: &str = "https://github.com/GloriousEggroll/proton-ge-custom/releases/download/GE-Proton11-12/GE-Proton11-12-x86_64.tar.gz";
 const ARCHIVE_SIZE: u64 = 566_859_228;
 const ARCHIVE_SHA512: &str = "2e37447902529c9fc39138dc0b3f24aed3513b59a190b825e6b4a668e49e2033bdf6b8a7998e8686e067bbb3f61f3a6633e2408f0cc96f6dad983bd18e2db31e";
@@ -109,7 +111,7 @@ pub async fn install_ge_proton(app: tauri::AppHandle) -> Result<String, String> 
         return Err("GE-Proton couldn't be unpacked. Check there's about 1.5 GB free, then try again.".into());
     }
     let _ = std::fs::remove_file(&archive);
-    let tool = unpacked.join(GE_PROTON_TAG);
+    let tool = unpacked.join(ARCHIVE_DIR);
     if !complete(&tool) {
         return Err("The GE-Proton download didn't contain the expected files.".into());
     }
@@ -187,7 +189,8 @@ mod tests {
     #[test]
     fn pinned_release_is_consistent() {
         assert!(ARCHIVE_URL.starts_with("https://github.com/GloriousEggroll/proton-ge-custom/releases/download/"));
-        assert!(ARCHIVE_URL.contains(&format!("/{GE_PROTON_TAG}/{GE_PROTON_TAG}-x86_64.tar.gz")));
+        assert!(ARCHIVE_URL.contains(&format!("/{GE_PROTON_TAG}/{ARCHIVE_DIR}.tar.gz")));
+        assert_eq!(ARCHIVE_DIR, format!("{GE_PROTON_TAG}-x86_64"));
         assert_eq!(ARCHIVE_SHA512.len(), 128);
         assert!(ARCHIVE_SHA512.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
         assert_eq!(hex(&[0x00, 0xab, 0x0f]), "00ab0f");

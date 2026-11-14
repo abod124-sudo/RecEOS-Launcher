@@ -240,11 +240,14 @@ fn proton_version(path: &Path) -> Option<Vec<u32>> {
     Some(version.split('.').map(|p| p.parse().unwrap_or(0)).collect())
 }
 
-/// GE-Proton's version ("GE-Proton10-25" -> [10, 25]). GE ships the video
+/// GE-Proton's version ("GE-Proton10-25" -> [10, 25]). Newer releases unpack
+/// as "GE-Proton11-12-x86_64", the name tools like ProtonUp-Qt keep. GE ships the video
 /// codecs Valve's Proton can't, so H.264 videos (Rec EOS's loading banner)
 /// play instead of Proton's colour-bars placeholder.
 fn ge_version(path: &Path) -> Option<Vec<u32>> {
-    let version = path.file_name()?.to_str()?.strip_prefix("GE-Proton")?;
+    let name = path.file_name()?.to_str()?;
+    let name = name.strip_suffix("-x86_64").unwrap_or(name);
+    let version = name.strip_prefix("GE-Proton")?;
     if version.is_empty() || !version.chars().all(|c| c.is_ascii_digit() || c == '-' || c == '.') {
         return None;
     }
@@ -1783,6 +1786,8 @@ mod tests {
         assert_eq!(automatic_proton(&valve).unwrap().file_name().unwrap(), "Proton 10.0");
         assert!(ge_version(Path::new("GE-Proton")).is_none());
         assert!(ge_version(Path::new("GE-Proton10-25-custom")).is_none());
+        assert_eq!(ge_version(Path::new("GE-Proton11-12-x86_64")), Some(vec![11, 12]));
+        assert!(ge_version(Path::new("GE-Proton11-12-aarch64")).is_none());
         assert!(automatic_proton(&[PathBuf::from("/s/Proton Experimental")]).is_none());
     }
     #[test]
