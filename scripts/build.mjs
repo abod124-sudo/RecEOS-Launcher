@@ -16,6 +16,18 @@ if (process.platform === 'linux') {
   if (prep.status !== 0) process.exit(prep.status || 1);
 }
 await run([dev ? 'dev' : 'build', ...cliArgs], 'tauri');
+if (!dev && process.platform === 'linux') {
+  // The AppImage must use the host's libwayland (see the script for why).
+  const targetIndex = cliArgs.indexOf('--target');
+  const target = targetIndex < 0 ? '' : cliArgs[targetIndex + 1];
+  const profile = cliArgs.includes('--debug') ? 'debug' : 'release';
+  const appimageDir = path.join(root, 'src-tauri', 'target', target, profile, 'bundle', 'appimage');
+  for (const name of fs.existsSync(appimageDir) ? fs.readdirSync(appimageDir) : []) {
+    if (!name.endsWith('.AppImage')) continue;
+    const fix = spawnSync('bash', [path.join(root, 'scripts/appimage-drop-wayland.sh'), path.join(appimageDir, name)], { cwd: root, stdio: 'inherit' });
+    if (fix.status !== 0) process.exit(fix.status || 1);
+  }
+}
 if (!dev && process.platform === 'win32' && args.includes('--unsigned')) {
   const targetRoot = path.join(root, 'src-tauri', 'target');
   const targetIndex = cliArgs.indexOf('--target');

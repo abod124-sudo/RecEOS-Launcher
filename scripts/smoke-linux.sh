@@ -15,6 +15,8 @@ cat "$scratch/ldd.log"
 mkdir "$scratch/image"
 (cd "$scratch/image" && env -u APPIMAGE_EXTRACT_AND_RUN "$image" --appimage-extract > "$scratch/extract.log")
 test -f "$scratch/image/squashfs-root/usr/lib/Rec EOS Launcher/receos-proton-helper.exe"
+# libwayland must come from the host (scripts/appimage-drop-wayland.sh).
+! ls "$scratch"/image/squashfs-root/usr/lib/libwayland-*.so* 2>/dev/null
 for format in deb image; do
   if [ "$format" = deb ]; then launch=("$scratch/deb/usr/bin/rec-eos-launcher");
   else launch=(env "APPDIR=$scratch/image/squashfs-root" "APPIMAGE=$image" "$scratch/image/squashfs-root/AppRun"); fi
@@ -30,7 +32,7 @@ for format in deb image; do
   set -e
   cat "$scratch/$format.log"
   test "$result" = 124
-  ! grep -E 'panicked at|error while loading shared libraries' "$scratch/$format.log"
+  ! grep -E 'panicked at|error while loading shared libraries|EGL_BAD_PARAMETER' "$scratch/$format.log"
   # This line is written after loadConfig succeeds, proving frontend IPC and
   # JavaScript initialization, rather than just a surviving native process.
   grep -R -F 'Launcher version:' "$XDG_DATA_HOME"
