@@ -672,13 +672,17 @@ impl Runtime {
     /// running, and only from inside does it reach it (same home, shared IPC
     /// and `/dev/shm`). Steam's files are at the same paths in there; the
     /// prefix and the game folders are granted on top (the paths the command
-    /// already shares with the Steam Linux Runtime container). Call it last:
-    /// arguments, variables and the directory are copied over as they are.
+    /// already shares with the Steam Linux Runtime container). The new
+    /// instance shares the running Steam's process namespace: Steam drops a
+    /// game whose process it can't see, and in a namespace of its own the game
+    /// closed ~6 s after connecting ("pipe is disconnected", seen 2026-11-15).
+    /// Call it last: arguments, variables and the directory are copied over
+    /// as they are.
     pub(crate) fn finish(&self, cmd: Command) -> Command {
         if !self.flatpak {
             return cmd;
         }
-        flatpak_command(&cmd)
+        flatpak_command(&cmd, flatpak_steam_pid())
     }
 
     pub(crate) fn expose_paths(
@@ -701,9 +705,46 @@ impl Runtime {
     }
 }
 
-fn flatpak_command(cmd: &Command) -> Command {
+/// A process of the running Flatpak Steam client (its `steam` binary, in a
+/// sandbox of the Steam app), to share its process namespace.
+fn flatpak_steam_pid() -> Option<u32> {
+    let mut pids: Vec<u32> = std::fs::read_dir("/proc")
+        .ok()?
+        .filter_map(|e| e.ok()?.file_name().to_str()?.parse().ok())
+        .collect();
+    pids.sort_unstable();
+    pids.into_iter().find(|pid| {
+        let proc = Path::new("/proc").join(pid.to_string());
+        std::fs::read_to_string(proc.join("comm")).is_ok_and(|c| c.trim_end() == "steam")
+            && std::fs::read_to_string(proc.join("root/.flatpak-info"))
+                .is_ok_and(|info| flatpak_info_app(&info) == Some(FLATPAK_STEAM))
+    })
+}
+
+/// The app id in a sandbox's `.flatpak-info` (`name=` under `[Application]`).
+fn flatpak_info_app(info: &str) -> Option<&str> {
+    let mut application = false;
+    for line in info.lines().map(str::trim) {
+        if line.starts_with('[') {
+            application = line == "[Application]";
+        } else if application {
+            if let Some(name) = line.strip_prefix("name=") {
+                return Some(name);
+            }
+        }
+    }
+    None
+}
+
+fn flatpak_command(cmd: &Command, steam_pid: Option<u32>) -> Command {
     let mut wrapped = system_command("flatpak");
     wrapped.arg("run");
+    // Without a running Steam the game can't start anyway; it then fails as
+    // it does natively, with the "start Steam" hint.
+    if let Some(pid) = steam_pid {
+        wrapped.arg(format!("--parent-pid={pid}"));
+        wrapped.arg("--parent-share-pids");
+    }
     wrapped.arg(format!("--command={}", cmd.get_program().to_string_lossy()));
     if let Some(dir) = cmd.get_current_dir() {
         wrapped.arg(format!("--cwd={}", dir.display()));
@@ -1844,14 +1885,16 @@ mod tests {
             .env("PRESSURE_VESSEL_FILESYSTEMS_RW", "/h/.local/share/com.receos.launcher/proton/receos:/h/My Games")
             .env_remove("LD_PRELOAD")
             .current_dir("/h/My Games");
-        let wrapped = flatpak_command(&cmd);
+        let wrapped = flatpak_command(&cmd, Some(4030));
         assert_eq!(wrapped.get_program(), "flatpak");
         let args: Vec<String> = wrapped.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
         let at = |needle: &str| args.iter().position(|a| a == needle).unwrap_or_else(|| panic!("{needle} missing: {args:?}"));
         assert_eq!(args[0], "run");
-        assert!(args[1].starts_with("--command=/h/.var/app/") && args[1].ends_with("_v2-entry-point"));
+        assert!(args.iter().any(|a| a.starts_with("--command=/h/.var/app/") && a.ends_with("_v2-entry-point")));
         let app = at("com.valvesoftware.Steam");
         for option in [
+            "--parent-pid=4030",
+            "--parent-share-pids",
             "--cwd=/h/My Games",
             "--env=STEAM_COMPAT_DATA_PATH=/h/.local/share/com.receos.launcher/proton/receos",
             "--unset-env=LD_PRELOAD",
@@ -1862,6 +1905,24 @@ mod tests {
         }
         assert_eq!(args.iter().filter(|a| *a == "--filesystem=/h/My Games").count(), 1);
         assert_eq!(&args[app + 1..], ["--verb=run", "--", "/h/Proton 10.0/proton", "waitforexitandrun", "/h/My Games/RecRoom.exe"]);
+        // No Steam running: a plain new instance.
+        let alone: Vec<String> = flatpak_command(&cmd, None).get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(!alone.iter().any(|a| a.starts_with("--parent")));
+    }
+    #[test]
+    fn flatpak_info_names_the_sandboxed_app() {
+        let info = "[Application]
+name=com.valvesoftware.Steam
+runtime=runtime/org.freedesktop.Platform/x86_64/26.08
+
+[Instance]
+instance-id=1
+";
+        assert_eq!(flatpak_info_app(info), Some(FLATPAK_STEAM));
+        assert_eq!(flatpak_info_app("[Instance]
+name=com.valvesoftware.Steam
+"), None);
+        assert_eq!(flatpak_info_app(""), None);
     }
     #[test]
     fn old_config_and_per_network_settings_roundtrip() {
