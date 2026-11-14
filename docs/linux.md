@@ -7,7 +7,8 @@ gameplay on real Linux PCs has not been confirmed for every revival yet (see
 
 ## Install
 
-1. Install native Linux Steam (not Flatpak), open it and sign in.
+1. Install Steam (from your distro, or the Flatpak from Flathub), open it and
+   sign in.
 2. In Steam, go to **Library → Tools** and install a stable **Proton** (for
    example Proton 11.0). Steam installs the Steam Linux Runtime it needs.
 3. Install your graphics driver with **Vulkan 1.3** support (see
@@ -34,8 +35,8 @@ is ready to play and why not.
 
 | Setting | What it does |
 | --- | --- |
-| Steam folder | Found automatically (`~/.local/share/Steam`, `~/.steam/steam`). Change it only for an unusual install. |
-| Proton version | Automatic picks the newest stable Proton. Any installed version (including Experimental or GE) can be chosen, or another folder. |
+| Steam folder | Found automatically: native Steam (`~/.local/share/Steam`, `~/.steam/steam`) first, then Flatpak Steam (`~/.var/app/com.valvesoftware.Steam/...`). Change it only for an unusual install. |
+| Proton version | Automatic picks the newest GE-Proton when one is installed (it can play the game's videos), otherwise the newest stable Valve Proton. Any installed version (including Experimental) can be chosen, or another folder. |
 | OpenGL mode | Runs the game's graphics through OpenGL (WineD3D) instead of Vulkan (DXVK). For PCs without a working Vulkan driver. Slower. |
 | Windows files (Proton prefix) | Each revival keeps its own, by default in `~/.local/share/com.receos.launcher/proton/<revival>`. It is kept when you uninstall a game and must not be inside a game folder or Steam's `compatdata`. |
 
@@ -61,6 +62,17 @@ Antivirus and Smart App Control checks don't exist on Linux and are hidden.
 why when it can. The usual cause is no Vulkan 1.3 driver: the game's
 `Player.log` then shows `d3d11: failed to create factory`. Install your GPU's
 Vulkan driver, or turn on **OpenGL mode** in Settings › Proton.
+
+**Videos (like Rec EOS's loading banner) show TV colour bars.** Valve's
+Proton can't play H.264 video, so it shows that test pattern in its place.
+Install [GE-Proton](https://github.com/GloriousEggroll/proton-ge-custom#installation)
+(for example with ProtonUp-Qt) and leave Proton version on Automatic. If
+Settings › Proton then asks for a Steam Linux Runtime (GE-Proton uses a newer
+one than Valve's Proton), install it in Steam.
+
+**Flatpak Steam.** Games start inside Flatpak Steam's sandbox (`flatpak run`),
+where they can reach the Steam client. Only the game's folder and its Proton
+prefix are opened to it, for that launch.
 
 **"Not ready" in Settings › Proton.** The message names what is missing
 (Steam, a Proton version, or the Steam Linux Runtime). Install it in Steam and

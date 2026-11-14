@@ -2046,9 +2046,10 @@ function setProtonStatus(state, title, detail = '') {
 /// innerHTML.
 function fillProtonVersions(status, selectedDir) {
   const select = $('protonVersion');
-  const stable = (status.installedProtons || []).filter(p => p.stable);
-  const newest = stable[0]?.name;
-  const options = [['', newest ? `Automatic (${newest})` : 'Automatic']];
+  // What Automatic really runs: the newest GE-Proton, else the newest
+  // stable Valve Proton (automatic_proton in linux.rs).
+  const automatic = status.automaticProton;
+  const options = [['', automatic ? `Automatic (${automatic})` : 'Automatic']];
   for (const tool of status.installedProtons || []) options.push([tool.path, tool.name]);
   if (selectedDir && !options.some(([value]) => value === selectedDir)) {
     options.push([selectedDir, selectedDir.split('/').filter(Boolean).pop() || selectedDir]);
@@ -2077,9 +2078,11 @@ async function refreshProtonPage() {
 
   const steamChosen = !!config.linux?.steamDir;
   $('protonSteamPath').textContent = status.steamDir || config.linux?.steamDir || 'Steam not found';
-  $('protonSteamNote').textContent = steamChosen
-    ? 'Chosen by you. Shared by every revival.'
-    : 'Found automatically. Shared by every revival.';
+  const flatpak = status.flatpakSteam === true
+    || (status.steamDir || '').includes('/.var/app/com.valvesoftware.Steam/');
+  $('protonSteamNote').textContent = (steamChosen ? 'Chosen by you.' : 'Found automatically.')
+    + (flatpak ? ' Flatpak Steam: games start inside its sandbox.' : '')
+    + ' Shared by every revival.';
   $('protonSteamReset').disabled = !steamChosen;
 
   fillProtonVersions(status, own.protonDir || '');
@@ -2094,6 +2097,7 @@ async function refreshProtonPage() {
   } else {
     setProtonStatus('error', 'Not ready', status.error || 'Steam or Proton could not be found.');
   }
+  $('protonVideoHint').hidden = !(status.ready && status.videoCodecs === false);
 }
 
 /// Saves one change to config.linux, then checks the result again.
@@ -2127,6 +2131,8 @@ async function pickProtonFolder() {
 }
 
 $('protonNetwork')?.addEventListener('change', refreshProtonPage);
+$('protonGetGe')?.addEventListener('click', () =>
+  window.radium?.openUrl('https://github.com/GloriousEggroll/proton-ge-custom#installation'));
 $('protonCheck')?.addEventListener('click', refreshProtonPage);
 $('protonVersion')?.addEventListener('change', async () => {
   const select = $('protonVersion');

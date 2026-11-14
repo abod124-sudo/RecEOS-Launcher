@@ -178,10 +178,50 @@ fn vdf_values(text: &str, key: &str) -> Vec<String> {
         .collect()
 }
 
+/// Flathub's Steam. Its home is `~/.var/app/<id>` (the manifest persists the
+/// whole home there), and every instance of it shares IPC and `/dev/shm`, so a
+/// game started in a second instance still reaches the running Steam client.
+pub const FLATPAK_STEAM: &str = "com.valvesoftware.Steam";
+
+fn home_dir() -> PathBuf {
+    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
+}
+
+/// Flatpak Steam's home on the host: what `~` is inside its sandbox.
+fn flatpak_steam_home(home: &Path) -> PathBuf {
+    home.join(".var/app").join(FLATPAK_STEAM)
+}
+
+/// Whether this Steam folder belongs to Flatpak Steam.
+fn is_flatpak_steam(steam: &Path, home: &Path) -> bool {
+    let root = flatpak_steam_home(home);
+    steam.starts_with(&root)
+        || std::fs::canonicalize(&root).is_ok_and(|root| steam.starts_with(root))
+}
+
 fn libraries(steam: &Path) -> Vec<PathBuf> {
+    libraries_in(steam, &home_dir())
+}
+
+fn libraries_in(steam: &Path, home: &Path) -> Vec<PathBuf> {
+    let flatpak = is_flatpak_steam(steam, home);
     let mut roots = vec![steam.to_path_buf()];
     if let Ok(vdf) = std::fs::read_to_string(steam.join("steamapps/libraryfolders.vdf")) {
         for path in vdf_values(&vdf, "path").into_iter().map(PathBuf::from) {
+            // Flatpak Steam writes paths as its sandbox sees them: a library
+            // under `~` there is under its own home here. The same host path
+            // may be another, native Steam's library, so the sandbox's copy
+            // wins. Paths it was granted (/mnt, /media and overrides) are the
+            // same on both sides.
+            let translated = if flatpak {
+                path.strip_prefix(home)
+                    .ok()
+                    .map(|rel| flatpak_steam_home(home).join(rel))
+                    .filter(|p| p.join("steamapps").is_dir())
+            } else {
+                None
+            };
+            let path = translated.unwrap_or(path);
             if path.is_absolute() && path.join("steamapps").is_dir() && !roots.contains(&path) {
                 roots.push(path);
             }
@@ -198,6 +238,28 @@ fn proton_version(path: &Path) -> Option<Vec<u32>> {
         return None;
     }
     Some(version.split('.').map(|p| p.parse().unwrap_or(0)).collect())
+}
+
+/// GE-Proton's version ("GE-Proton10-25" -> [10, 25]). GE ships the video
+/// codecs Valve's Proton can't, so H.264 videos (Rec EOS's loading banner)
+/// play instead of Proton's colour-bars placeholder.
+fn ge_version(path: &Path) -> Option<Vec<u32>> {
+    let version = path.file_name()?.to_str()?.strip_prefix("GE-Proton")?;
+    if version.is_empty() || !version.chars().all(|c| c.is_ascii_digit() || c == '-' || c == '.') {
+        return None;
+    }
+    Some(version.split(['-', '.']).map(|p| p.parse().unwrap_or(0)).collect())
+}
+
+/// What Automatic runs: the newest GE-Proton when one is installed, for its
+/// video codecs; otherwise the newest stable Valve Proton.
+fn automatic_proton(tools: &[PathBuf]) -> Option<PathBuf> {
+    tools
+        .iter()
+        .filter_map(|p| ge_version(p).map(|v| (v, p)))
+        .max_by(|a, b| a.0.cmp(&b.0))
+        .map(|(_, p)| p.clone())
+        .or_else(|| tools.iter().find(|p| proton_version(p).is_some()).cloned())
 }
 
 fn installed_protons(roots: &[PathBuf]) -> Vec<PathBuf> {
@@ -256,6 +318,8 @@ fn runtime_entry(proton: &Path, roots: &[PathBuf]) -> Result<PathBuf, String> {
 pub const LAUNCH_VERB: &str = "waitforexitandrun";
 
 pub struct Runtime {
+    /// Steam is Flathub's: commands run inside its sandbox (see [`Runtime::finish`]).
+    pub flatpak: bool,
     pub steam: PathBuf,
     pub proton: PathBuf,
     pub compat_data: PathBuf,
@@ -322,21 +386,27 @@ fn compat_data_dir(app: &tauri::AppHandle, network: Network) -> Result<PathBuf, 
 }
 
 fn steam_dir(settings: &LinuxSettings) -> Result<PathBuf, String> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
+    steam_dir_in(settings, &home_dir())
+}
+
+fn steam_dir_in(settings: &LinuxSettings, home: &Path) -> Result<PathBuf, String> {
+    let flatpak = flatpak_steam_home(home);
     let candidates = if settings.steam_dir.is_empty() {
+        // Native Steam first, then Flatpak Steam, whose data moved from
+        // data/Steam to .local/share/Steam in later versions of the package.
         vec![
             home.join(".local/share/Steam"),
             home.join(".steam/steam"),
             home.join(".steam/root"),
+            flatpak.join(".local/share/Steam"),
+            flatpak.join("data/Steam"),
         ]
     } else {
         vec![PathBuf::from(&settings.steam_dir)]
     };
     candidates.into_iter().find(|p| p.is_absolute() && p.join("steamapps").is_dir())
         .and_then(|p| std::fs::canonicalize(p).ok())
-        .ok_or_else(|| "Install native Linux Steam and open it once. Flatpak Steam is not supported in this release.".into())
+        .ok_or_else(|| "Steam not found. Install Steam (from your distro or Flathub), open it and sign in once, then press Check again.".into())
 }
 
 pub fn resolve(app: &tauri::AppHandle, network: Network) -> Result<Runtime, String> {
@@ -347,8 +417,8 @@ pub fn resolve(app: &tauri::AppHandle, network: Network) -> Result<Runtime, Stri
     let proton = if let Some(s) = selected.filter(|s| !s.proton_dir.is_empty()) {
         PathBuf::from(&s.proton_dir)
     } else {
-        installed_protons(&roots).into_iter().find(|p| proton_version(p).is_some())
-            .ok_or("Install a stable Valve Proton release from Steam's Tools library, or select its directory in Settings.")?
+        automatic_proton(&installed_protons(&roots))
+            .ok_or("Install a stable Proton release from Steam's Tools library (or GE-Proton), or select its directory in Settings.")?
     };
     if !proton.is_absolute() || !proton.join("proton").is_file() {
         return Err("The selected Proton directory must contain the proton executable.".into());
@@ -394,6 +464,7 @@ pub fn resolve(app: &tauri::AppHandle, network: Network) -> Result<Runtime, Stri
         writable_compat_directory(&prefix)?;
     }
     Ok(Runtime {
+        flatpak: is_flatpak_steam(&steam, &home_dir()),
         steam,
         proton,
         compat_data,
@@ -564,15 +635,17 @@ impl Runtime {
         self.expose_paths(&mut cmd, &[work_dir])?;
         cmd.env("STEAM_COMPAT_INSTALL_PATH", work_dir);
         cmd.arg(exe).args(args).current_dir(work_dir);
-        cmd.spawn()
+        self.finish(cmd)
+            .spawn()
             .map_err(|e| format!("Could not start Proton: {e}"))
     }
 
     pub fn windows_path(&self, path: &Path) -> Result<String, String> {
         let mut cmd = self.command("getcompatpath")?;
         self.expose_paths(&mut cmd, &[path.parent().unwrap_or(path)])?;
-        let output = cmd
-            .arg(path)
+        cmd.arg(path);
+        let output = self
+            .finish(cmd)
             .output()
             .map_err(|e| format!("Proton could not translate this path: {e}"))?;
         let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -584,6 +657,20 @@ impl Runtime {
 
     pub fn native_path(&self, path: &str) -> Option<PathBuf> {
         windows_to_native(&self.compat_data.join("pfx"), path)
+    }
+
+    /// The command as it is really run. With Flatpak Steam it moves into a
+    /// new instance of Steam's sandbox: the game needs the Steam client
+    /// running, and only from inside does it reach it (same home, shared IPC
+    /// and `/dev/shm`). Steam's files are at the same paths in there; the
+    /// prefix and the game folders are granted on top (the paths the command
+    /// already shares with the Steam Linux Runtime container). Call it last:
+    /// arguments, variables and the directory are copied over as they are.
+    pub(crate) fn finish(&self, cmd: Command) -> Command {
+        if !self.flatpak {
+            return cmd;
+        }
+        flatpak_command(&cmd)
     }
 
     pub(crate) fn expose_paths(
@@ -604,6 +691,43 @@ impl Runtime {
         );
         Ok(())
     }
+}
+
+fn flatpak_command(cmd: &Command) -> Command {
+    let mut wrapped = system_command("flatpak");
+    wrapped.arg("run");
+    wrapped.arg(format!("--command={}", cmd.get_program().to_string_lossy()));
+    if let Some(dir) = cmd.get_current_dir() {
+        wrapped.arg(format!("--cwd={}", dir.display()));
+    }
+    let mut grants: Vec<PathBuf> = Vec::new();
+    for (key, value) in cmd.get_envs() {
+        let key = key.to_string_lossy();
+        match value {
+            Some(value) => {
+                if key == "PRESSURE_VESSEL_FILESYSTEMS_RW" {
+                    grants.extend(std::env::split_paths(value));
+                }
+                wrapped.arg(format!("--env={key}={}", value.to_string_lossy()));
+            }
+            None => {
+                wrapped.arg(format!("--unset-env={key}"));
+            }
+        }
+    }
+    if let Some(dir) = cmd.get_current_dir() {
+        grants.push(dir.to_path_buf());
+    }
+    let mut seen = Vec::new();
+    for path in grants.into_iter().filter(|p| p.is_absolute()) {
+        if !seen.contains(&path) {
+            wrapped.arg(format!("--filesystem={}", path.display()));
+            seen.push(path);
+        }
+    }
+    wrapped.arg(FLATPAK_STEAM);
+    wrapped.args(cmd.get_args());
+    wrapped
 }
 
 // /usr resources are outside Steam's container. Stage a fresh helper inside
@@ -710,7 +834,7 @@ pub fn get_linux_runtime_status(app: tauri::AppHandle, network: Option<String>) 
         .unwrap_or_default()
         .into_iter()
         .map(
-            |p| json!({ "name": tool_name(&p), "path": p, "stable": proton_version(&p).is_some() }),
+            |p| json!({ "name": tool_name(&p), "path": p, "stable": proton_version(&p).is_some(), "ge": ge_version(&p).is_some() }),
         )
         .collect();
     // The prefix shown even when Steam or Proton is missing, so the page can
@@ -721,6 +845,9 @@ pub fn get_linux_runtime_status(app: tauri::AppHandle, network: Option<String>) 
         "steamDir": steam,
         "compatDataDir": compat_data,
         "defaultCompatDataDir": config::app_data_dir(&app).join("proton").join(network_name(network)),
+        "automaticProton": steam.as_ref()
+            .and_then(|s| automatic_proton(&installed_protons(&libraries(s))))
+            .map(|p| tool_name(&p)),
         "installedProtons": tools,
         "gameplayValidated": false,
     });
@@ -730,6 +857,10 @@ pub fn get_linux_runtime_status(app: tauri::AppHandle, network: Option<String>) 
             status["ready"] = json!(true);
             status["protonDir"] = json!(r.proton);
             status["protonName"] = json!(tool_name(&r.proton));
+            // Valve's Proton plays a colour-bars clip in place of H.264
+            // videos; the page suggests GE-Proton then.
+            status["videoCodecs"] = json!(ge_version(&r.proton).is_some());
+            status["flatpakSteam"] = json!(r.flatpak);
             status["runtimeName"] = json!(r.entry.parent().map(tool_name));
             status["compatDataDir"] = json!(r.compat_data);
         }
@@ -849,7 +980,7 @@ pub fn launch(
 ) -> Result<(), String> {
     let runtime = resolve(app, network)?;
     if !steam_running() {
-        return Err("Start native Linux Steam and sign in before playing.".into());
+        return Err("Start Steam and sign in before playing.".into());
     }
     let dir = exe
         .parent()
@@ -1638,6 +1769,91 @@ mod tests {
         assert!(proton_version(Path::new("GE-Proton10-1")).is_none());
     }
     #[test]
+    fn automatic_prefers_newest_ge_proton_then_stable_valve() {
+        let tools: Vec<PathBuf> = ["Proton 10.0", "Proton Experimental", "GE-Proton9-27", "GE-Proton10-4", "GE-Proton10-25"]
+            .iter().map(|n| PathBuf::from("/s/steamapps/common").join(n)).collect();
+        assert_eq!(automatic_proton(&tools).unwrap().file_name().unwrap(), "GE-Proton10-25");
+        let valve: Vec<PathBuf> = ["Proton Experimental", "Proton 10.0", "Proton 9.0"]
+            .iter().map(|n| PathBuf::from("/s").join(n)).collect();
+        assert_eq!(automatic_proton(&valve).unwrap().file_name().unwrap(), "Proton 10.0");
+        assert!(ge_version(Path::new("GE-Proton")).is_none());
+        assert!(ge_version(Path::new("GE-Proton10-25-custom")).is_none());
+        assert!(automatic_proton(&[PathBuf::from("/s/Proton Experimental")]).is_none());
+    }
+    #[test]
+    #[cfg(unix)]
+    fn flatpak_steam_is_found_after_native_and_its_libraries_translated() {
+        let home = temp("flatpak-home");
+        let flatpak = home.join(".var/app/com.valvesoftware.Steam/.local/share/Steam");
+        std::fs::create_dir_all(flatpak.join("steamapps")).unwrap();
+        // A library under ~ as the sandbox sees it, which exists only in the
+        // sandbox's home, plus a granted drive that is the same on both sides.
+        let inside = home.join(".var/app/com.valvesoftware.Steam/Games/Library");
+        std::fs::create_dir_all(inside.join("steamapps")).unwrap();
+        let drive = home.join("mnt/drive/SteamLibrary");
+        std::fs::create_dir_all(drive.join("steamapps")).unwrap();
+        // The same host path as the sandbox's ~/Games/Library belongs to some
+        // other, native install and must not be picked up instead.
+        std::fs::create_dir_all(home.join("Games/Library/steamapps")).unwrap();
+        std::fs::write(
+            flatpak.join("steamapps/libraryfolders.vdf"),
+            format!(
+                "\"libraryfolders\" {{ \"0\" {{ \"path\" \"{}\" }} \"1\" {{ \"path\" \"{}\" }} \"2\" {{ \"path\" \"{}\" }} }}",
+                home.join(".local/share/Steam").display(),
+                home.join("Games/Library").display(),
+                drive.display()
+            ),
+        )
+        .unwrap();
+        let found = steam_dir_in(&LinuxSettings::default(), &home).unwrap();
+        assert_eq!(found, std::fs::canonicalize(&flatpak).unwrap());
+        assert!(is_flatpak_steam(&found, &home));
+        let roots = libraries_in(&found, &home);
+        assert!(roots.contains(&inside), "{roots:?}");
+        assert!(roots.contains(&drive), "{roots:?}");
+        assert!(!roots.contains(&home.join("Games/Library")), "{roots:?}");
+        // Native Steam, once present, wins.
+        std::fs::create_dir_all(home.join(".local/share/Steam/steamapps")).unwrap();
+        let native = steam_dir_in(&LinuxSettings::default(), &home).unwrap();
+        assert!(!is_flatpak_steam(&native, &home));
+        std::fs::remove_dir_all(home).unwrap();
+    }
+    #[test]
+    fn missing_steam_message_mentions_flathub() {
+        let home = temp("no-steam");
+        let error = steam_dir_in(&LinuxSettings::default(), &home).unwrap_err();
+        assert!(error.contains("Flathub") && !error.contains("not supported"), "{error}");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+    #[test]
+    #[cfg(unix)]
+    fn flatpak_commands_run_inside_steams_sandbox_with_their_paths_granted() {
+        let mut cmd = Command::new("/h/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/common/SteamLinuxRuntime_sniper/_v2-entry-point");
+        cmd.args(["--verb=run", "--", "/h/Proton 10.0/proton", "waitforexitandrun", "/h/My Games/RecRoom.exe"])
+            .env("STEAM_COMPAT_DATA_PATH", "/h/.local/share/com.receos.launcher/proton/receos")
+            .env("PRESSURE_VESSEL_FILESYSTEMS_RW", "/h/.local/share/com.receos.launcher/proton/receos:/h/My Games")
+            .env_remove("LD_PRELOAD")
+            .current_dir("/h/My Games");
+        let wrapped = flatpak_command(&cmd);
+        assert_eq!(wrapped.get_program(), "flatpak");
+        let args: Vec<String> = wrapped.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        let at = |needle: &str| args.iter().position(|a| a == needle).unwrap_or_else(|| panic!("{needle} missing: {args:?}"));
+        assert_eq!(args[0], "run");
+        assert!(args[1].starts_with("--command=/h/.var/app/") && args[1].ends_with("_v2-entry-point"));
+        let app = at("com.valvesoftware.Steam");
+        for option in [
+            "--cwd=/h/My Games",
+            "--env=STEAM_COMPAT_DATA_PATH=/h/.local/share/com.receos.launcher/proton/receos",
+            "--unset-env=LD_PRELOAD",
+            "--filesystem=/h/.local/share/com.receos.launcher/proton/receos",
+            "--filesystem=/h/My Games",
+        ] {
+            assert!(at(option) < app, "{option} must come before the app id");
+        }
+        assert_eq!(args.iter().filter(|a| *a == "--filesystem=/h/My Games").count(), 1);
+        assert_eq!(&args[app + 1..], ["--verb=run", "--", "/h/Proton 10.0/proton", "waitforexitandrun", "/h/My Games/RecRoom.exe"]);
+    }
+    #[test]
     fn old_config_and_per_network_settings_roundtrip() {
         let old: config::Config = serde_json::from_str("{}").unwrap();
         assert!(old.linux.networks.is_empty());
@@ -1683,6 +1899,7 @@ mod tests {
     fn proton_command_preserves_arguments_and_isolates_environment() {
         let root = temp("command");
         let mut runtime = Runtime {
+            flatpak: false,
             steam: root.join("Steam & Games"),
             proton: root.join("Proton 10.0"),
             compat_data: root.join("prefix"),
@@ -1753,6 +1970,7 @@ mod tests {
         let source = root.join("installed-helper.exe");
         std::fs::write(&source, b"bundled helper").unwrap();
         let runtime = Runtime {
+            flatpak: false,
             steam: root.clone(),
             proton: root.clone(),
             compat_data: root.join("prefix"),

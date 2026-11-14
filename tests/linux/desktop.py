@@ -12,6 +12,7 @@ import json
 import mmap
 import os
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import sys
@@ -386,6 +387,49 @@ def main():
         config["linux"] = {"steamDir": "", "networks": {}}
         assert driver.invoke("cmd_save_config", {"config": config})
         record("Runtime discovery with spaces, missing runtime, official-prefix and cross-network protections")
+        # Flatpak Steam, found on its own (no Steam folder chosen), with
+        # Automatic preferring GE-Proton. $HOME is shared by every run of the
+        # matrix, so the fixture is removed again whatever happens.
+        flatpak_home = Path(os.environ["HOME"]) / ".var/app/com.valvesoftware.Steam"
+        try:
+            flatpak_steam = flatpak_home / ".local/share/Steam"
+            for name, app_id, runtime_dir in [("Proton 10.0", "1628350", "SteamLinuxRuntime_sniper"),
+                                              ("GE-Proton10-25", "4183110", "SteamLinuxRuntime_4")]:
+                tool = flatpak_steam / ("compatibilitytools.d" if name.startswith("GE-") else "steamapps/common") / name
+                tool.mkdir(parents=True)
+                (tool / "proton").write_text("#!/bin/sh\nexit 99\n")
+                (tool / "toolmanifest.vdf").write_text(f'"manifest" {{ "require_tool_appid" "{app_id}" }}')
+                (flatpak_steam / f"steamapps/appmanifest_{app_id}.acf").write_text(f'"AppState" {{ "installdir" "{runtime_dir}" }}')
+            (flatpak_steam / "steamapps/common/SteamLinuxRuntime_sniper").mkdir()
+            (flatpak_steam / "steamapps/common/SteamLinuxRuntime_sniper/_v2-entry-point").write_text("#!/bin/sh\nexit 99\n")
+            status = driver.invoke("get_linux_runtime_status", {"network": "receos"})
+            # GE-Proton's own runtime isn't installed yet: Automatic still
+            # picks it, and the page names the runtime to install.
+            assert status["automaticProton"] == "GE-Proton10-25", status
+            assert not status["ready"] and "4183110" in status["error"], status
+            assert ".var/app/com.valvesoftware.Steam" in status["steamDir"], status
+            (flatpak_steam / "steamapps/common/SteamLinuxRuntime_4").mkdir()
+            (flatpak_steam / "steamapps/common/SteamLinuxRuntime_4/_v2-entry-point").write_text("#!/bin/sh\nexit 99\n")
+            status = driver.invoke("get_linux_runtime_status", {"network": "receos"})
+            assert status["ready"] and status["flatpakSteam"] is True and status["videoCodecs"] is True, status
+            assert status["protonName"] == "GE-Proton10-25", status
+            # Valve's Proton chosen by hand: ready, and the page offers GE.
+            config = driver.invoke("cmd_get_config")
+            config["linux"] = {"steamDir": "", "networks": {"receos": {"protonDir": str(flatpak_steam / "steamapps/common/Proton 10.0")}}}
+            assert driver.invoke("cmd_save_config", {"config": config})
+            status = driver.invoke("get_linux_runtime_status", {"network": "receos"})
+            assert status["ready"] and status["videoCodecs"] is False, status
+            driver.click("#nav-settings")
+            driver.click("#setnav-proton")
+            wait(lambda: driver.js("return $('protonStatus').dataset.state === 'ready' && !$('protonVideoHint').hidden"), "GE-Proton hint for Valve's Proton")
+            assert "Flatpak" in driver.js("return $('protonSteamNote').textContent")
+            driver.screenshot(args.output / "proton-flatpak.png")
+        finally:
+            shutil.rmtree(flatpak_home, ignore_errors=True)
+            config = driver.invoke("cmd_get_config")
+            config["linux"] = {"steamDir": "", "networks": {}}
+            assert driver.invoke("cmd_save_config", {"config": config})
+        record("Flatpak Steam detection, GE-Proton preference and the video hint")
         # Exercise the real cleanup IPC, not only its path predicate. A prefix
         # below a known game-data directory would otherwise be removed together
         # with that directory during extraction or uninstall.

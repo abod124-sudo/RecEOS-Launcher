@@ -439,7 +439,7 @@ pub fn launch(app: &tauri::AppHandle, exe: &Path, work_dir: &str, args: &[&str])
     let (patch, _held) = verified_patch(app)?;
     let cfg = crate::config::current(app);
     let runtime = crate::linux::resolve(app, crate::config::Network::Stella)?;
-    if !crate::linux::steam_running() { return Err("Start native Linux Steam and sign in before playing Stella.".into()); }
+    if !crate::linux::steam_running() { return Err("Start Steam and sign in before playing Stella.".into()); }
     let helper = app.path().resource_dir().map_err(|e| e.to_string())?.join("receos-proton-helper.exe");
     #[cfg(debug_assertions)]
     let helper = if helper.is_file() { helper } else {
@@ -464,7 +464,9 @@ pub fn launch(app: &tauri::AppHandle, exe: &Path, work_dir: &str, args: &[&str])
     // Exchange bounded files in a fresh private directory instead of pipes.
     cmd.arg(&helper.0).args(["--request-file", &runtime.windows_path(&input)?,
         "--response-file", &runtime.windows_path(&output)?])
-        .current_dir(work_dir).stdin(Stdio::null()).stdout(Stdio::null());
+        .current_dir(work_dir);
+    let mut cmd = runtime.finish(cmd);
+    cmd.stdin(Stdio::null()).stdout(Stdio::null());
     let mut child = cmd.spawn().map_err(|e| format!("Could not start the Proton helper: {e}"))?;
     let result = (|| -> Result<(), String> {
         let started = std::time::Instant::now();
