@@ -151,7 +151,7 @@ fn box_blur(img: &mut [u8], w: u32, h: u32) {
     }
 }
 
-/// Standard base64 with padding. Also what `defender` hands PowerShell.
+/// Standard base64 with padding.
 pub(crate) fn base64(bytes: &[u8]) -> String {
     const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);

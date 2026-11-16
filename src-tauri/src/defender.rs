@@ -31,23 +31,19 @@ fn is_path_safe(path: &str) -> bool {
         .any(|c| c.is_control() || matches!(c, '"' | '<' | '>' | '|' | '\r' | '\n'))
 }
 
-/// Exit code the non-elevated wrapper reports when the elevated process never
-/// started: the UAC prompt was declined, or Windows refused to launch it.
+/// What `ShellExecuteExW` fails with when the UAC prompt is declined.
 /// Windows' own `ERROR_CANCELLED`.
-const ELEVATION_CANCELLED: i32 = 1223;
-
-/// UTF-16LE base64, the encoding PowerShell's `-EncodedCommand` takes.
-fn utf16_base64(s: &str) -> String {
-    let bytes: Vec<u8> = s.encode_utf16().flat_map(u16::to_le_bytes).collect();
-    crate::frost::base64(&bytes)
-}
+#[cfg(windows)]
+const ELEVATION_CANCELLED: u32 = 1223;
 
 /// `s` as a PowerShell single-quoted string literal.
 ///
 /// PowerShell ends a single-quoted string at any of five quote characters, not
 /// only the ASCII one: ‘ ’ ‚ and ‛ count too. Doubling only `'` left a folder
 /// like `O’Brien` able to close the string early — a syntax error at best, and
-/// in a script that then runs elevated.
+/// in a script that then runs elevated. Inside a single-quoted string nothing
+/// else is special — no `$` expansion, no backtick escapes — so with every
+/// quote doubled the folder is plain data, whatever it contains.
 fn ps_quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('\'');
@@ -62,20 +58,16 @@ fn ps_quote(s: &str) -> String {
 }
 
 /// `cmdlet` (`Add-MpPreference` or `Remove-MpPreference`) for every folder in
-/// `dirs`, in one call. Each path is decoded from base64 at run time, so no
-/// character a folder name can hold — quotes of any kind, `$`, backticks — is
-/// ever parsed as PowerShell.
+/// `dirs`, in one call, each folder a single-quoted literal (see [`ps_quote`]).
+///
+/// The folders are written out in plain text on purpose. They used to be
+/// base64 that the script decoded at run time, handed over as
+/// `-EncodedCommand` by a hidden PowerShell that started another one: exactly
+/// what malware turning Defender off looks like, and Defender flagged it as
+/// such when the button was pressed. Readable, the command is also what the
+/// UAC prompt's "Show more details" shows the user.
 fn exclusion_call(cmdlet: &str, dirs: &[&str]) -> String {
-    let paths = dirs
-        .iter()
-        .map(|dir| {
-            format!(
-                "[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{}'))",
-                utf16_base64(dir)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
+    let paths = dirs.iter().map(|dir| ps_quote(dir)).collect::<Vec<_>>().join(", ");
     format!("{} -ExclusionPath @({})", cmdlet, paths)
 }
 
@@ -98,67 +90,95 @@ fn exclusion_script(cmdlet: &str, dirs: &[&str], stale: &[&str]) -> String {
     )
 }
 
-/// The script the non-elevated PowerShell runs to run `inner` in an elevated
-/// one, so there is one UAC prompt however much `inner` does.
+/// The command line the elevated PowerShell is started with to run `inner`.
 ///
-/// No folder ever appears in either script as text. The elevated script is
-/// handed over as `-EncodedCommand`, and inside it each path is decoded from
-/// base64 at run time (see [`exclusion_call`]).
+/// `$ErrorActionPreference = 'Stop'` makes a cmdlet error end the script, so
+/// PowerShell exits non-zero and the launcher doesn't record a failed change
+/// as done. Folders can't hold `"` (see [`is_path_safe`]) and the script never
+/// ends in a backslash, so the double quotes around it are the only ones the
+/// command line has.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn elevated_params(inner: &str) -> String {
+    format!("-NoProfile -NonInteractive -Command \"$ErrorActionPreference = 'Stop'; {}\"", inner)
+}
+
+/// Start PowerShell as administrator with `params` — one UAC prompt — wait
+/// for it, and answer its exit code, or the Win32 error that kept it from
+/// starting ([`ELEVATION_CANCELLED`] when the prompt was declined).
 ///
-/// `$ErrorActionPreference = 'Stop'` plus the `catch` is what makes a declined
-/// UAC prompt a failure. Without them Start-Process's error ended only that
-/// statement, `$p` stayed null, and `exit $null` exited 0 — so declining the
-/// prompt reported the exclusion as added and the launcher saved it as done.
-fn elevated_script(powershell_path: &str, inner: &str) -> String {
-    format!(
-        "$ErrorActionPreference = 'Stop'; \
-         try {{ \
-           $p = Start-Process -FilePath {} -ArgumentList '-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand {}' -Verb RunAs -WindowStyle Hidden -Wait -PassThru; \
-           exit $p.ExitCode \
-         }} catch {{ exit {} }}",
-        ps_quote(powershell_path),
-        utf16_base64(inner),
-        ELEVATION_CANCELLED
-    )
+/// The launcher asks Windows for the elevated process itself, through
+/// `ShellExecuteExW`'s `runas` verb, rather than having a hidden PowerShell
+/// call `Start-Process -Verb RunAs` on a second one. The window opens
+/// minimised and unfocused: visible in the taskbar for the second it runs,
+/// rather than hidden.
+#[cfg(windows)]
+fn shell_execute_elevated(file: &str, params: &str) -> Result<u32, u32> {
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
+    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject, INFINITE};
+    use windows_sys::Win32::UI::Shell::{
+        ShellExecuteExW, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWMINNOACTIVE;
+
+    let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let (verb, file, params) = (wide("runas"), wide(file), wide(params));
+
+    // SAFETY: a zeroed SHELLEXECUTEINFOW is valid (null pointers, no flags);
+    // the strings outlive the call, and the process handle it hands back is
+    // waited on and closed here.
+    unsafe {
+        let mut info: SHELLEXECUTEINFOW = std::mem::zeroed();
+        info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
+        // NO_UI: a failure comes back as an error for the page to show,
+        // not as a Windows error dialog of its own.
+        info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI;
+        info.lpVerb = verb.as_ptr();
+        info.lpFile = file.as_ptr();
+        info.lpParameters = params.as_ptr();
+        info.nShow = SW_SHOWMINNOACTIVE;
+        if ShellExecuteExW(&mut info) == 0 {
+            return Err(GetLastError());
+        }
+        if info.hProcess.is_null() {
+            return Err(0);
+        }
+        WaitForSingleObject(info.hProcess, INFINITE);
+        let mut code = 0u32;
+        let got = GetExitCodeProcess(info.hProcess, &mut code);
+        CloseHandle(info.hProcess);
+        if got == 0 { Err(GetLastError()) } else { Ok(code) }
+    }
 }
 
 /// Run `inner` as administrator, through one UAC prompt. The error is what to
 /// tell the user.
 ///
-/// Awaited, not blocked on: this waits for an elevated PowerShell process and,
-/// with it, for the user to answer a UAC prompt — which could be a long time
-/// to hold a tokio worker that other commands are queued behind.
+/// The wait runs on a blocking thread: it lasts as long as the user takes to
+/// answer the UAC prompt, too long to hold a tokio worker that other commands
+/// are queued behind.
+#[cfg(windows)]
 async fn run_elevated(inner: &str) -> Result<(), String> {
     let powershell_path = get_powershell_path();
-    let script = elevated_script(&powershell_path, inner);
-
-    let mut command = Command::new(&powershell_path);
-    command.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
-    #[cfg(target_os = "windows")]
-    {
-        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    let params = elevated_params(inner);
+    let result = tokio::task::spawn_blocking(move || shell_execute_elevated(&powershell_path, &params))
+        .await
+        .map_err(|e| e.to_string())?;
+    match result {
+        Ok(0) => Ok(()),
+        Ok(code) => Err(format!(
+            "Windows Defender did not accept the change (exit code {}).",
+            code
+        )),
+        Err(ELEVATION_CANCELLED) => {
+            Err("The administrator prompt was declined, so nothing was changed.".to_string())
+        }
+        Err(error) => Err(format!("Windows couldn't start the administrator prompt (error {}).", error)),
     }
+}
 
-    match command.output().await {
-        Ok(output) if output.status.success() => Ok(()),
-        Ok(output) => Err(match output.status.code() {
-            Some(ELEVATION_CANCELLED) => {
-                "The administrator prompt was declined, so nothing was changed.".to_string()
-            }
-            code => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let detail = stderr.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
-                format!(
-                    "Windows Defender did not accept the change (exit code {}). {}",
-                    code.map(|c| c.to_string()).unwrap_or_else(|| "unknown".into()),
-                    detail
-                )
-                .trim()
-                .to_string()
-            }
-        }),
-        Err(e) => Err(e.to_string()),
-    }
+#[cfg(not(windows))]
+async fn run_elevated(_inner: &str) -> Result<(), String> {
+    Err("Windows Defender is only available on Windows.".to_string())
 }
 
 /// The network a command is about: the one the page names, as for every other
@@ -281,18 +301,16 @@ mod tests {
         assert_eq!(ps_quote("\u{2018}\u{201A}\u{201B}"), "'\u{2018}\u{2018}\u{201A}\u{201A}\u{201B}\u{201B}'");
     }
 
+    /// None of the patterns Defender reads as tampering: no encoded command,
+    /// no run-time decoding, no PowerShell starting another one hidden.
     #[test]
-    fn the_folder_never_appears_in_the_script_as_text() {
-        let dir = "C:\\Users\\O\u{2019}Brien\\$(calc)'; Remove-Item C:\\ -Recurse #\\client";
-        let old = "C:\\old\\it's $(notepad)";
-        let inner = exclusion_script("Add-MpPreference", &[dir, "C:\\data\\stella"], &[old]);
-        for script in [inner.clone(), elevated_script("C:\\ps.exe", &inner)] {
-            assert!(!script.contains("Brien"));
-            assert!(!script.contains("calc"));
-            assert!(!script.contains("Remove-Item"));
-            assert!(!script.contains("stella"));
-            assert!(!script.contains("notepad"));
+    fn the_command_is_plain_readable_powershell() {
+        let inner = exclusion_script("Add-MpPreference", &["C:\\new"], &["C:\\old"]);
+        let params = elevated_params(&inner);
+        for bad in ["EncodedCommand", "FromBase64String", "Start-Process", "RunAs", "Hidden", "Bypass"] {
+            assert!(!params.contains(bad), "{bad} in {params}");
         }
+        assert!(params.contains("Add-MpPreference -ExclusionPath @('C:\\new')"));
     }
 
     /// The folders a moved client was excluded at go first, and can't fail
@@ -310,68 +328,60 @@ mod tests {
         );
     }
 
-    /// Stella's exclusion covers two folders in one elevated call: both are
-    /// handed to one `-ExclusionPath` array, so there is still one UAC prompt.
+    /// Run the exact command line the elevated PowerShell gets, unelevated,
+    /// with `Add-MpPreference` / `Remove-MpPreference` swapped for functions
+    /// that print the folders they were handed, one call per line.
     #[cfg(windows)]
-    #[test]
-    fn several_folders_go_to_one_exclusion_call() {
-        let dirs = ["C:\\data\\client-stella", "C:\\data\\it's stella"];
-        let script = elevated_script("C:\\ps.exe", &exclusion_call("Add-MpPreference", &dirs));
-        // Pull the elevated command back out and decode it, as PowerShell would.
-        let encoded = script.split("-EncodedCommand ").nth(1).unwrap().split('\'').next().unwrap();
-        let script = format!(
-            "[Console]::OutputEncoding = [Text.Encoding]::UTF8; \
-             [Console]::Out.Write([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{}')))",
-            encoded
-        );
+    fn run_like_elevated(inner: &str) -> (Option<i32>, String) {
+        use std::os::windows::process::CommandExt;
+        let fakes = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; \
+            function Add-MpPreference { param($ExclusionPath) [Console]::Out.Write('add:' + ($ExclusionPath -join '|') + \"`n\") }; \
+            function Remove-MpPreference { param($ExclusionPath) [Console]::Out.Write('remove:' + ($ExclusionPath -join '|') + \"`n\") }; ";
+        // The fakes go in as their own leading statements; `inner` is untouched.
+        let params = elevated_params(&format!("{}{}", fakes.replace('"', "\\\""), inner));
         let out = std::process::Command::new(get_powershell_path())
-            .args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &utf16_base64(&script)])
+            .raw_arg(&params)
             .output()
             .expect("powershell runs");
-        let inner = String::from_utf8_lossy(&out.stdout).to_string();
-        assert!(inner.starts_with("Add-MpPreference -ExclusionPath @("));
-        assert_eq!(inner.matches("FromBase64String").count(), 2);
-
-        // And each path decodes to exactly what went in.
-        let decode_all = inner.replace("Add-MpPreference -ExclusionPath ", "[Console]::OutputEncoding = [Text.Encoding]::UTF8; [Console]::Out.Write((");
-        let decode_all = format!("{}) -join '|')", decode_all);
-        let out = std::process::Command::new(get_powershell_path())
-            .args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &utf16_base64(&decode_all)])
-            .output()
-            .expect("powershell runs");
-        assert_eq!(String::from_utf8_lossy(&out.stdout), dirs.join("|"));
+        (out.status.code(), String::from_utf8_lossy(&out.stdout).to_string())
     }
 
-    /// The real round trip: PowerShell decodes the path to exactly the string
-    /// that went in, however hostile its characters. Not elevated — the same
-    /// decoding, printed instead of handed to Defender.
+    /// The round trip through the real command line: PowerShell hands the
+    /// cmdlet exactly the folders that went in, however hostile their
+    /// characters, and none of them runs as code.
     #[cfg(windows)]
     #[test]
-    fn powershell_decodes_the_path_exactly() {
-        let dir = "C:\\Users\\O\u{2019}Brien\\it's $env:TEMP `n (x) & client";
-        let script = format!(
-            "[Console]::OutputEncoding = [Text.Encoding]::UTF8; \
-             [Console]::Out.Write([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{}')))",
-            utf16_base64(dir)
-        );
-        let out = std::process::Command::new(get_powershell_path())
-            .args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &utf16_base64(&script)])
-            .output()
-            .expect("powershell runs");
-        assert_eq!(String::from_utf8_lossy(&out.stdout), dir);
+    fn hostile_folder_names_reach_the_cmdlet_exactly() {
+        let dir = "C:\\Users\\O\u{2019}Brien\\$(calc)'; Remove-Item C:\\nope -Recurse #\\client";
+        let other = "C:\\data\\it's $env:TEMP `n (x) & \u{2018}\u{201A}\u{201B} stella\\";
+        let (code, out) = run_like_elevated(&exclusion_call("Add-MpPreference", &[dir, other]));
+        assert_eq!(code, Some(0), "{out}");
+        assert_eq!(out, format!("add:{}|{}\n", dir, other));
     }
 
-    /// A launch that fails before anything elevated runs — which is what a
-    /// declined UAC prompt is — must come back as a failure, not exit 0.
+    /// Stella's exclusion covers two folders and a moved client takes the old
+    /// one out, all in one elevated process — one UAC prompt — old first.
     #[cfg(windows)]
     #[test]
-    fn a_failed_elevation_is_not_reported_as_success() {
-        let script = elevated_script("C:\\radium-no-such-dir\\missing.exe", &exclusion_call("Add-MpPreference", &["C:\\x"]));
-        let status = std::process::Command::new(get_powershell_path())
-            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-            .status()
+    fn several_folders_and_a_move_go_through_one_process() {
+        let inner = exclusion_script("Add-MpPreference", &["C:\\a", "C:\\b"], &["C:\\old"]);
+        let (code, out) = run_like_elevated(&inner);
+        assert_eq!(code, Some(0));
+        assert_eq!(out, "remove:C:\\old\nadd:C:\\a|C:\\b\n");
+    }
+
+    /// A cmdlet that fails makes the process fail, so the launcher doesn't
+    /// record the exclusion as added.
+    #[cfg(windows)]
+    #[test]
+    fn a_failed_cmdlet_is_not_reported_as_success() {
+        use std::os::windows::process::CommandExt;
+        let inner = "Write-Error 'Defender said no'";
+        let out = std::process::Command::new(get_powershell_path())
+            .raw_arg(elevated_params(inner))
+            .output()
             .expect("powershell runs");
-        assert_eq!(status.code(), Some(ELEVATION_CANCELLED));
+        assert_ne!(out.status.code(), Some(0));
     }
 }
 

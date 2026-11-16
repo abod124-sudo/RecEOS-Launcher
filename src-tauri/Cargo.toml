@@ -86,6 +86,8 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Memory",
     "Win32_System_Diagnostics_Debug",
     "Win32_System_ProcessStatus",
+    # The UAC prompt for the Windows Defender exclusion (defender.rs).
+    "Win32_UI_Shell",
 ] }
 
 # Optimise dependencies even in dev builds, while leaving this crate itself
