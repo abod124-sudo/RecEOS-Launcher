@@ -3354,6 +3354,7 @@ dependencies = [
  "crc32fast",
  "flate2",
  "futures-util",
+ "getrandom 0.2.17",
  "gio",
  "gtk",
  "image",

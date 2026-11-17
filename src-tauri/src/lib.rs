@@ -184,6 +184,11 @@ pub fn run() {
             receos::receos_server_status,
             receos_social::receos_auth_status,
             receos_social::receos_login,
+            receos_social::receos_signin_providers,
+            receos_social::receos_signin_start,
+            receos_social::receos_signin_wait,
+            receos_social::receos_signin_code,
+            receos_social::receos_signin_cancel,
             receos_social::receos_logout,
             receos_social::receos_friends,
             receos_social::receos_set_friend_favorite,
@@ -369,7 +374,7 @@ fn thumb_request(uri: &tauri::http::Uri) -> Option<(String, u32)> {
 /// in the `radiumimg:` scheme handler, and the release profile sets
 /// `panic = "abort"`, so it would take the whole launcher down rather than fail
 /// one image. See `a_stray_percent_before_a_multibyte_char_does_not_panic`.
-fn percent_decode(s: &str) -> String {
+pub(crate) fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i = 0;

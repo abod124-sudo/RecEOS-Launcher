@@ -4,7 +4,10 @@
 //! It all goes through the Rec EOS server's launcher API (`/launcher/*`, the
 //! Rec EOS repo's server/src/launcher.ts). The player signs in with their Rec
 //! EOS username and password (the one Discord's /password sets); the password
-//! goes to the server once and is never kept. The token the server answers
+//! goes to the server once and is never kept. Or with the Steam or Discord
+//! account they linked on the website (`receos_signin_*` below, the server's
+//! launcher-signin.ts). Either way, an account with two-factor sign-in also
+//! needs the code from its authenticator app. The token the server answers
 //! with is kept encrypted for this Windows user (DPAPI, as the Vanilla session
 //! is), and is all later calls send.
 //!
@@ -141,16 +144,25 @@ pub async fn receos_auth_status(app: AppHandle) -> Value {
     }
 }
 
+/// A password sign-in. With two-factor sign-in on, the first try (no `code`)
+/// answers `{ twoFactor: true, error }` and the page asks for the code; the
+/// same call again with it signs in. Never retried here: each missing or wrong
+/// code costs one of the account's sign-in tries.
 #[tauri::command]
-pub async fn receos_login(app: AppHandle, username: String, password: String) -> Result<Value, String> {
+pub async fn receos_login(app: AppHandle, username: String, password: String, code: Option<String>) -> Result<Value, String> {
     let password = Zeroizing::new(password);
     let username = username.trim().trim_start_matches('@').to_string();
     if username.is_empty() || password.is_empty() {
         return Err("Enter your Rec EOS username and password.".into());
     }
+    // Always a "code" field (empty until asked): it tells the server this
+    // launcher has its own code box, so it asks for "the 6-digit code" rather
+    // than "your password, a space, then the code".
+    let code = code.as_deref().map(str::trim).unwrap_or_default();
+    let body = json!({ "username": username, "password": password.as_str(), "code": code });
     let res = http()
         .post(format!("{}/launcher/login", api_root()))
-        .json(&json!({ "username": username, "password": password.as_str() }))
+        .json(&body)
         .send()
         .await
         .map_err(|e| format!("Couldn't reach Rec EOS: {e}"))?;
@@ -161,12 +173,252 @@ pub async fn receos_login(app: AppHandle, username: String, password: String) ->
     if status == reqwest::StatusCode::NOT_FOUND || data["error"].as_str() == Some("unauthorized") {
         return Err("Rec EOS's server doesn't take launcher sign-ins yet. Try again after its next update.".into());
     }
+    signed_in_with(&app, &data, "password")
+}
+
+/// Keeps the token from a sign-in answer, or says why there is none (with
+/// `twoFactor: true` when the account's code is what's missing or wrong).
+fn signed_in_with(app: &AppHandle, data: &Value, how: &str) -> Result<Value, String> {
     let Some(tok) = data["token"].as_str().filter(|t| t.len() == 64 && t.bytes().all(|b| b.is_ascii_hexdigit())) else {
-        return Err(data["error"].as_str().unwrap_or("Couldn't sign in.").to_string());
+        let error = data["error"].as_str().unwrap_or("Couldn't sign in.").to_string();
+        if data["twoFactor"].as_bool() == Some(true) {
+            return Ok(json!({ "twoFactor": true, "error": error }));
+        }
+        return Err(error);
     };
-    set_token(&app, Some(tok));
-    crate::applog::backend("info", "Rec EOS", format!("Signed in as @{}.", data["account"]["username"].as_str().unwrap_or("")));
+    set_token(app, Some(tok));
+    crate::applog::backend("info", "Rec EOS", format!("Signed in as @{} ({how}).", data["account"]["username"].as_str().unwrap_or("")));
     Ok(json!({ "player": player_json(&data["account"]), "roles": data["roles"] }))
+}
+
+// ─── Steam / Discord sign-in ────────────────────────────────────────────────
+//
+// The trip goes through the player's own browser and comes back here over
+// loopback (RFC 8252), as the server's launcher-signin.ts describes:
+//
+// 1. `receos_signin_start` listens on 127.0.0.1:<any port>, makes a random
+//    verifier and asks the server for the Steam/Discord address (sending the
+//    port and the verifier's SHA-256). The page opens it in the browser.
+// 2. `receos_signin_wait` waits for the browser to come back to
+//    http://127.0.0.1:<port>/receos-signin?code=... (or ?error=...), shows a
+//    "you can close this tab" page, and trades the code and the verifier for
+//    a token. With two-factor sign-in on, it answers `{ twoFactor: true }` and
+//    keeps the code; `receos_signin_code` sends it again with the app's code.
+// 3. `receos_signin_cancel` gives up (the modal was closed).
+
+/// How long the browser has to come back.
+const TRIP_SECS: u64 = 10 * 60;
+
+struct Trip {
+    listener: tokio::net::TcpListener,
+    verifier: Zeroizing<String>,
+    cancel: tokio::sync::oneshot::Receiver<()>,
+}
+
+/// The trip that is waiting for the browser, and how to cancel the wait.
+static TRIP: Mutex<Option<Trip>> = Mutex::new(None);
+static CANCEL: Mutex<Option<tokio::sync::oneshot::Sender<()>>> = Mutex::new(None);
+/// A code from the browser that still needs the account's two-factor code:
+/// (code, verifier).
+static PENDING: Mutex<Option<(Zeroizing<String>, Zeroizing<String>)>> = Mutex::new(None);
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn cancel_trip() {
+    if let Ok(mut c) = CANCEL.lock() {
+        if let Some(tx) = c.take() {
+            let _ = tx.send(());
+        }
+    }
+    if let Ok(mut t) = TRIP.lock() {
+        *t = None;
+    }
+    if let Ok(mut p) = PENDING.lock() {
+        *p = None;
+    }
+}
+
+/// Which of Steam and Discord the server signs in with: `{ steam, discord }`.
+#[tauri::command]
+pub async fn receos_signin_providers() -> Value {
+    let res = async {
+        let res = http().get(format!("{}/launcher/signin/providers", api_root())).send().await.ok()?;
+        if !res.status().is_success() {
+            return None;
+        }
+        res.json::<Value>().await.ok()
+    }
+    .await;
+    match res {
+        Some(v) => json!({ "steam": v["steam"].as_bool() == Some(true), "discord": v["discord"].as_bool() == Some(true) }),
+        None => json!({ "steam": false, "discord": false }),
+    }
+}
+
+/// Starts a Steam or Discord sign-in: `{ url }`, the address to open in the
+/// browser. Any earlier trip is dropped.
+#[tauri::command]
+pub async fn receos_signin_start(provider: String) -> Result<Value, String> {
+    if provider != "steam" && provider != "discord" {
+        return Err("That sign-in isn't available.".into());
+    }
+    cancel_trip();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .map_err(|e| format!("Couldn't get ready for the browser: {e}"))?;
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+    let mut raw = [0u8; 32];
+    getrandom::getrandom(&mut raw).map_err(|e| format!("Couldn't start the sign-in: {e}"))?;
+    let verifier = Zeroizing::new(hex(&raw));
+    let challenge = hex(&<sha2::Sha256 as sha2::Digest>::digest(verifier.as_bytes()));
+    let res = http()
+        .post(format!("{}/launcher/signin/start", api_root()))
+        .json(&json!({ "provider": provider, "port": port, "challenge": challenge }))
+        .send()
+        .await
+        .map_err(|e| format!("Couldn't reach Rec EOS: {e}"))?;
+    let status = res.status();
+    let data: Value = res.json().await.unwrap_or(Value::Null);
+    let url = data["url"].as_str().unwrap_or_default();
+    let allowed = ["https://steamcommunity.com/openid/login?", "https://discord.com/oauth2/authorize?"];
+    if !status.is_success() || !allowed.iter().any(|a| url.starts_with(a)) {
+        // A server from before launcher Steam/Discord sign-in: the launcher
+        // API's "Sign in to your Rec EOS account." for an unknown path.
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err("Rec EOS's server doesn't take Steam or Discord sign-ins from the launcher yet.".into());
+        }
+        return Err(data["error"].as_str().unwrap_or("Couldn't start the sign-in.").to_string());
+    }
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    *CANCEL.lock().map_err(|e| e.to_string())? = Some(tx);
+    *TRIP.lock().map_err(|e| e.to_string())? = Some(Trip { listener, verifier, cancel: rx });
+    Ok(json!({ "url": url }))
+}
+
+/// The page the browser shows once it is back.
+fn browser_page(ok: bool, text: &str) -> String {
+    let text = text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    let title = if ok { "Signed in" } else { "Not signed in" };
+    let body = format!(
+        "<!doctype html><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>Rec EOS Launcher</title>\
+<body style=\"font:16px system-ui,sans-serif;margin:0;display:grid;place-items:center;min-height:100vh;background:#15171c;color:#e9ebef\">\
+<main style=\"max-width:420px;padding:24px;text-align:center\"><h1 style=\"font-size:22px\">{title}</h1><p style=\"line-height:1.5;opacity:.85\">{text}</p></main>"
+    );
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'none'; style-src 'unsafe-inline'\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+/// Reads one request's first line off a browser connection: its path and query.
+async fn request_target(stream: &mut tokio::net::TcpStream) -> Option<String> {
+    use tokio::io::AsyncReadExt;
+    let mut buf = Vec::with_capacity(1024);
+    let mut chunk = [0u8; 1024];
+    while !buf.windows(2).any(|w| w == b"\r\n") && buf.len() < 8192 {
+        let n = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut chunk)).await.ok()?.ok()?;
+        if n == 0 {
+            return None;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    }
+    let line = String::from_utf8_lossy(&buf).lines().next()?.to_string();
+    let mut parts = line.split(' ');
+    (parts.next()? == "GET").then_some(())?;
+    parts.next().map(str::to_string)
+}
+
+/// The value of one query parameter (percent- and plus-decoded).
+fn query_param(target: &str, name: &str) -> Option<String> {
+    let query = target.split_once('?')?.1;
+    query.split('&').find_map(|pair| {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        (k == name).then(|| crate::percent_decode(&v.replace('+', " ")))
+    })
+}
+
+/// Waits for the browser to come back from Steam/Discord, then signs in.
+/// `{ player }`, or `{ twoFactor: true, error }` (then `receos_signin_code`),
+/// or `{ cancelled: true }` when the modal gave up on it.
+#[tauri::command]
+pub async fn receos_signin_wait(app: AppHandle) -> Result<Value, String> {
+    use tokio::io::AsyncWriteExt;
+    let Some(Trip { listener, verifier, mut cancel }) = TRIP.lock().map_err(|e| e.to_string())?.take() else {
+        return Err("Start the sign-in again.".into());
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(TRIP_SECS);
+    let (code, error) = loop {
+        let accepted = tokio::select! {
+            _ = &mut cancel => return Ok(json!({ "cancelled": true })),
+            _ = tokio::time::sleep_until(deadline) => return Err("The sign-in took too long. Try again.".into()),
+            a = listener.accept() => a,
+        };
+        let Ok((mut stream, _)) = accepted else { continue };
+        let Some(target) = request_target(&mut stream).await else { continue };
+        if target.split('?').next() != Some("/receos-signin") {
+            let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+            continue;
+        }
+        let code = query_param(&target, "code").filter(|c| c.len() == 64 && c.bytes().all(|b| b.is_ascii_hexdigit()));
+        let error = query_param(&target, "error").map(|e| e.chars().take(300).collect::<String>());
+        let page = match (&code, &error) {
+            (Some(_), _) => browser_page(true, "You can close this tab and go back to the Rec EOS Launcher."),
+            (None, Some(e)) => browser_page(false, e),
+            _ => browser_page(false, "Something went wrong. Start the sign-in again from the Rec EOS Launcher."),
+        };
+        let _ = stream.write_all(page.as_bytes()).await;
+        let _ = stream.shutdown().await;
+        break (code, error);
+    };
+    if let Ok(mut c) = CANCEL.lock() {
+        *c = None;
+    }
+    drop(listener);
+    let Some(code) = code else {
+        return Err(error.unwrap_or_else(|| "Couldn't sign in. Try again.".into()));
+    };
+    exchange(&app, Zeroizing::new(code), verifier, None).await
+}
+
+/// The authenticator app's code (or a recovery code) for a Steam/Discord
+/// sign-in that asked for one.
+#[tauri::command]
+pub async fn receos_signin_code(app: AppHandle, code: String) -> Result<Value, String> {
+    let code = code.trim().to_string();
+    if code.is_empty() {
+        return Err("Enter the code from your authenticator app.".into());
+    }
+    let Some((trip_code, verifier)) = PENDING.lock().map_err(|e| e.to_string())?.take() else {
+        return Err("This sign-in expired. Try again.".into());
+    };
+    exchange(&app, trip_code, verifier, Some(code)).await
+}
+
+#[tauri::command]
+pub fn receos_signin_cancel() {
+    cancel_trip();
+}
+
+async fn exchange(app: &AppHandle, code: Zeroizing<String>, verifier: Zeroizing<String>, totp: Option<String>) -> Result<Value, String> {
+    let mut body = json!({ "code": code.as_str(), "verifier": verifier.as_str() });
+    if let Some(t) = &totp {
+        body["totp"] = json!(t);
+    }
+    let res = http()
+        .post(format!("{}/launcher/signin/exchange", api_root()))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Couldn't reach Rec EOS: {e}"))?;
+    let data: Value = res.json().await.unwrap_or(Value::Null);
+    let out = signed_in_with(app, &data, "Steam/Discord")?;
+    // The code still works with the right two-factor code: keep it for the next try.
+    if out["twoFactor"].as_bool() == Some(true) {
+        *PENDING.lock().map_err(|e| e.to_string())? = Some((code, verifier));
+    }
+    Ok(out)
 }
 
 #[tauri::command]

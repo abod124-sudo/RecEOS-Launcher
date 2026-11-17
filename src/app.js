@@ -508,7 +508,12 @@ function withoutBackdrop(cfg) {
 
     // Rec EOS account and what it opens (receos_social.rs).
     receosAuthStatus: () => invoke('receos_auth_status'),
-    receosLogin: (username, password) => invoke('receos_login', { username, password }),
+    receosLogin: (username, password, code) => invoke('receos_login', { username, password, code: code || null }),
+    receosSigninProviders: () => invoke('receos_signin_providers'),
+    receosSigninStart: (provider) => invoke('receos_signin_start', { provider }),
+    receosSigninWait: () => invoke('receos_signin_wait'),
+    receosSigninCode: (code) => invoke('receos_signin_code', { code }),
+    receosSigninCancel: () => invoke('receos_signin_cancel'),
     receosLogout: () => invoke('receos_logout'),
     receosFriends: () => invoke('receos_friends'),
     receosSetFriendFavorite: (id, on) => invoke('receos_set_friend_favorite', { id: Number(id), on: !!on }),
@@ -8534,45 +8539,150 @@ function receosSignedOutBy(err) {
   if (String(err).includes('Sign in to Rec EOS') && receosPlayer) applyReceosAuth(null, { expired: true });
 }
 
+// The sign-in modal's state: 'password' (username + password, then maybe a
+// two-factor code), 'wait' (a Steam/Discord trip open in the browser) or
+// 'trip-code' (the two-factor code after Steam/Discord).
+let receosLoginMode = 'password';
+/** Bumped by every new trip or close, so a late answer from an old one is ignored. */
+let receosTripSeq = 0;
+const RECEOS_PROVIDER_NAMES = { steam: 'Steam', discord: 'Discord' };
+
+function setReceosLoginMode(mode, { codeShown = mode === 'trip-code', waiting = '' } = {}) {
+  receosLoginMode = mode;
+  const modal = $('receosLoginModal');
+  modal.classList.toggle('is-trip', mode !== 'password');
+  $('receosLoginCodeField').hidden = !codeShown;
+  $('receosLoginCode').required = codeShown;
+  $('receosLoginUser').required = mode === 'password';
+  $('receosLoginPass').required = mode === 'password';
+  $('receosLoginWaiting').textContent = waiting;
+  $('receosLoginWaiting').hidden = !waiting;
+  $('receosLoginSubmit').hidden = mode === 'wait';
+}
+
+function showReceosLoginError(text) {
+  const err = $('receosLoginError');
+  err.textContent = text;
+  err.hidden = !text;
+}
+
+/** The server asked for the account's two-factor code: show the field (keeping the password). */
+function askReceosCode(res, mode) {
+  setReceosLoginMode(mode, { codeShown: true });
+  showReceosLoginError(res.error || 'Enter the 6-digit code from your authenticator app (or a recovery code).');
+  const code = $('receosLoginCode');
+  code.value = '';
+  code.focus();
+}
+
+function receosSignedIn(res) {
+  closeReceosLogin();
+  applyReceosAuth(res.player);
+  toast(`Signed in as @${res.player.userName}.`, 'ok');
+}
+
+async function refreshReceosProviders() {
+  let p = { steam: false, discord: false };
+  try { p = await window.radium.receosSigninProviders(); } catch {}
+  $('receosLoginSteam').hidden = !p.steam;
+  $('receosLoginDiscord').hidden = !p.discord;
+  $('receosLoginProviders').hidden = !(p.steam || p.discord);
+}
+
 function openReceosLogin() {
   const modal = $('receosLoginModal');
   if (!modal) return;
-  $('receosLoginError').hidden = true;
+  receosTripSeq++;
+  showReceosLoginError('');
   $('receosLoginPass').value = '';
+  $('receosLoginCode').value = '';
+  setReceosLoginMode('password', { codeShown: false });
+  refreshReceosProviders();
   showModal(modal);
   setTimeout(() => ($('receosLoginUser').value ? $('receosLoginPass') : $('receosLoginUser')).focus(), 50);
 }
 
 function closeReceosLogin() {
+  receosTripSeq++;
+  if (receosLoginMode !== 'password') window.radium.receosSigninCancel().catch(() => {});
   $('receosLoginPass').value = '';
+  $('receosLoginCode').value = '';
   hideModal($('receosLoginModal'));
 }
 
 $('receosLoginForm')?.addEventListener('submit', async (e) => {
   e.preventDefault();
+  if (receosLoginMode === 'wait') return;
   const user = $('receosLoginUser').value.trim();
   const pass = $('receosLoginPass').value;
-  const err = $('receosLoginError');
+  const codeShown = !$('receosLoginCodeField').hidden;
+  const code = $('receosLoginCode').value.trim();
   const submit = $('receosLoginSubmit');
-  if (!user || !pass) return;
+  if (receosLoginMode === 'password' && (!user || !pass)) return;
+  if (codeShown && !code) return;
   submit.disabled = true;
   submit.textContent = 'Signing in…';
-  err.hidden = true;
+  showReceosLoginError('');
   try {
-    const res = await window.radium.receosLogin(user, pass);
-    closeReceosLogin();
-    applyReceosAuth(res.player);
-    toast(`Signed in as @${res.player.userName}.`, 'ok');
+    const res = receosLoginMode === 'trip-code'
+      ? await window.radium.receosSigninCode(code)
+      : await window.radium.receosLogin(user, pass, codeShown ? code : null);
+    if (res.twoFactor) {
+      askReceosCode(res, receosLoginMode);
+      return;
+    }
+    receosSignedIn(res);
   } catch (e2) {
-    err.textContent = String(e2);
-    err.hidden = false;
-    $('receosLoginPass').select();
+    showReceosLoginError(String(e2));
+    if (receosLoginMode === 'trip-code') {
+      // The Steam/Discord code is gone (expired or used): start over.
+      setReceosLoginMode('password', { codeShown: false });
+    } else if (codeShown) {
+      $('receosLoginCode').select();
+    } else {
+      $('receosLoginPass').select();
+    }
   } finally {
     submit.disabled = false;
     submit.textContent = 'Sign in';
   }
 });
-$('receosLoginCancel')?.addEventListener('click', closeReceosLogin);
+
+document.querySelectorAll('.receos-login-provider').forEach((btn) => btn.addEventListener('click', async () => {
+  const provider = btn.dataset.provider;
+  const name = RECEOS_PROVIDER_NAMES[provider];
+  const seq = ++receosTripSeq;
+  showReceosLoginError('');
+  $('receosLoginCode').value = '';
+  setReceosLoginMode('wait', { codeShown: false, waiting: `Finish signing in with ${name} in your browser. This window updates when you're done.` });
+  try {
+    const { url } = await window.radium.receosSigninStart(provider);
+    if (seq !== receosTripSeq) return;
+    await window.radium.openUrl(url);
+    const res = await window.radium.receosSigninWait();
+    if (seq !== receosTripSeq || res.cancelled) return;
+    if (res.twoFactor) {
+      askReceosCode(res, 'trip-code');
+      return;
+    }
+    receosSignedIn(res);
+  } catch (e2) {
+    if (seq !== receosTripSeq) return;
+    setReceosLoginMode('password', { codeShown: false });
+    showReceosLoginError(String(e2));
+  }
+}));
+$('receosLoginCancel')?.addEventListener('click', () => {
+  // While the browser is out: back to the password form, not closed.
+  if (receosLoginMode !== 'password') {
+    receosTripSeq++;
+    window.radium.receosSigninCancel().catch(() => {});
+    showReceosLoginError('');
+    setReceosLoginMode('password', { codeShown: false });
+    return;
+  }
+  closeReceosLogin();
+});
 $('receosLoginClose')?.addEventListener('click', closeReceosLogin);
 
 function closeReceosAccountMenu() {

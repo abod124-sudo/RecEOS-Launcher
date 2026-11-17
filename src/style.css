@@ -4543,6 +4543,16 @@ body:not(.network-stella):not(.network-receos) .network-has-friends { display: n
 .receos-login-field { display: flex; flex-direction: column; gap: 4px; }
 .receos-login-error { margin: 0; color: var(--err, #cf222e); }
 .receos-login-error[hidden] { display: none; }
+.receos-login-field[hidden], .receos-login-waiting[hidden], .receos-login-providers[hidden], .receos-login-provider[hidden] { display: none; }
+.receos-login-waiting { margin: 0; opacity: 0.85; line-height: 1.45; }
+.receos-login-providers { display: flex; flex-direction: column; gap: 8px; }
+.receos-login-or { display: flex; align-items: center; gap: 10px; font-size: 0.85em; opacity: 0.6; text-transform: uppercase; letter-spacing: 0.08em; }
+.receos-login-or::before, .receos-login-or::after { content: ""; flex: 1; border-top: 1px solid currentColor; opacity: 0.5; }
+.receos-login-provider { width: 100%; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+/* The logos take the button's own text colour, so each skin's button colours carry over. */
+.receos-login-logo { width: 16px; height: 16px; flex: none; fill: currentColor; }
+/* Waiting for the browser, or a code after Steam/Discord: no username/password. */
+#receosLoginModal.is-trip .receos-login-password-only { display: none; }
 /* The networks with accounts, and so notifications: Vanilla and Stella. */
 body:not(.network-vanilla):not(.network-stella):not(.network-receos) .network-only-accounts { display: none !important; }
 /* The sign-in offered in place of a Rooms/People list while signed out. */

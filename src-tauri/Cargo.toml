@@ -53,6 +53,9 @@ steamworks = "0.13"
 # Rec EOS releases are signed with ECDSA P-256 (receos.rs), the same check the
 # mod's in-game updater makes.
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
+# The verifier for a Steam/Discord sign-in (receos_social.rs). Already built
+# for other crates.
+getrandom = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
