@@ -79,6 +79,15 @@ fn set_token(app: &AppHandle, value: Option<&str>) {
         *t = value.map(|v| Zeroizing::new(v.to_string()));
     }
     LOADED.store(true, std::sync::atomic::Ordering::SeqCst);
+    // Signed out (or the token turned down): the live channel closes. A new
+    // sign-in opens it.
+    match value {
+        Some(_) => {
+            crate::receos_live::stop();
+            crate::receos_live::start(app);
+        }
+        None => crate::receos_live::stop(),
+    }
     if let Some(path) = token_path(app) {
         match value {
             Some(v) => {
@@ -87,6 +96,11 @@ fn set_token(app: &AppHandle, value: Option<&str>) {
             None => store::delete(&path),
         }
     }
+}
+
+/// The signed-in session's token, for the live channel (receos_live.rs).
+pub(crate) fn session_token(app: &AppHandle) -> Option<Zeroizing<String>> {
+    token(app)
 }
 
 /// Whether someone is signed in (as far as the launcher knows).
