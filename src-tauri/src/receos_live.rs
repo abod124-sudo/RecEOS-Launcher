@@ -35,6 +35,10 @@ const PING_EVERY: Duration = Duration::from_secs(40);
 const SILENT_FOR: Duration = Duration::from_secs(100);
 const RETRY_FIRST: Duration = Duration::from_secs(2);
 const RETRY_MAX: Duration = Duration::from_secs(5 * 60);
+/// A connection that lasted this long worked: the next wait starts small
+/// again. One dropped sooner (a proxy closing it at once) keeps backing off,
+/// or every reconnect's catch-up fetch would come round every 2 s.
+const STABLE_FOR: Duration = Duration::from_secs(60);
 /// Replaced by the account's newer launchers (the server keeps 4 per account),
 /// or a server without the channel yet: try again much later.
 const RETRY_REPLACED: Duration = Duration::from_secs(10 * 60);
@@ -110,8 +114,8 @@ fn jitter(d: Duration) -> Duration {
 
 /// How a connection ended, and so how long to wait before the next.
 enum Ended {
-    /// Worked, then dropped: try again soon.
-    Dropped,
+    /// Was open this long, then dropped.
+    Dropped(Duration),
     /// Couldn't connect: wait longer each time.
     Failed(String),
     /// The server doesn't want this one now.
@@ -131,10 +135,15 @@ async fn run(app: &AppHandle, gen: u64) {
         let _ = app.emit(EVENT, json!({ "kind": "down" }));
         let delay = match ended {
             Ended::Stop => return,
-            Ended::Dropped => {
+            Ended::Dropped(lasted) if lasted >= STABLE_FOR => {
                 failures = 0;
                 wait = RETRY_FIRST;
                 RETRY_FIRST
+            }
+            Ended::Dropped(_) => {
+                let d = wait;
+                wait = (wait * 2).min(RETRY_MAX);
+                d
             }
             Ended::Failed(why) => {
                 failures += 1;
@@ -210,7 +219,8 @@ async fn connect(app: &AppHandle, gen: u64) -> Ended {
     let (mut tx, mut rx) = ws.split();
     let mut ping = tokio::time::interval(PING_EVERY);
     ping.tick().await;
-    let mut heard = Instant::now();
+    let opened = Instant::now();
+    let mut heard = opened;
     loop {
         tokio::select! {
             _ = STOP.notified() => {
@@ -223,10 +233,10 @@ async fn connect(app: &AppHandle, gen: u64) -> Ended {
                     return Ended::Stop;
                 }
                 if heard.elapsed() > SILENT_FOR {
-                    return Ended::Dropped;
+                    return Ended::Dropped(opened.elapsed());
                 }
                 if tx.send(Message::Text("ping".into())).await.is_err() {
-                    return Ended::Dropped;
+                    return Ended::Dropped(opened.elapsed());
                 }
             }
             msg = rx.next() => {
@@ -247,11 +257,11 @@ async fn connect(app: &AppHandle, gen: u64) -> Ended {
                         return match frame.map(|f| f.code) {
                             Some(CloseCode::Policy) => Ended::Later(RETRY_REPLACED, "newer launchers on this account hold the connection".into()),
                             Some(CloseCode::Again) => Ended::Failed("the server is busy".into()),
-                            _ => Ended::Dropped,
+                            _ => Ended::Dropped(opened.elapsed()),
                         };
                     }
                     Some(Ok(_)) => {}
-                    Some(Err(_)) | None => return Ended::Dropped,
+                    Some(Err(_)) | None => return Ended::Dropped(opened.elapsed()),
                 }
             }
         }
