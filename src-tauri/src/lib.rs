@@ -12,6 +12,7 @@ pub mod linux;
 pub mod migrate;
 pub mod receos;
 pub mod receos_api;
+pub mod receos_live;
 pub mod receos_social;
 pub mod scraper;
 pub mod server;
@@ -207,6 +208,7 @@ pub fn run() {
             receos_social::receos_set_room_interaction,
             receos_social::receos_room_players,
             receos_social::receos_weekly,
+            receos_live::receos_live_start,
             // Stella account
             stella_api::stella_auth_status,
             stella_api::stella_login,

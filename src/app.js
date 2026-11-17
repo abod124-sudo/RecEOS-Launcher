@@ -516,6 +516,12 @@ function withoutBackdrop(cfg) {
     receosSigninCancel: () => invoke('receos_signin_cancel'),
     receosLogout: () => invoke('receos_logout'),
     receosFriends: () => invoke('receos_friends'),
+    // The server's live channel (receos_live.rs): { kind: 'connected' | 'sync' | 'down', why }.
+    receosLiveStart: () => invoke('receos_live_start'),
+    onReceosLive: async (cb) => {
+      if (unlistenMap['receos-live']) unlistenMap['receos-live']();
+      unlistenMap['receos-live'] = await listen('receos-live', (event) => cb(event.payload || {}));
+    },
     receosSetFriendFavorite: (id, on) => invoke('receos_set_friend_favorite', { id: Number(id), on: !!on }),
     receosAcceptFriendRequest: (id) => invoke('receos_accept_friend_request', { id: Number(id) }),
     receosSendFriendRequest: (id) => invoke('receos_send_friend_request', { id: Number(id) }),
@@ -8033,7 +8039,10 @@ async function refreshStellaFriends() {
     res = { success: false, error: String(e) };
   }
   if (activeNetwork !== net || !socialPlayer()) return;
-  if (net === 'receos' && res?.success) receosFriendsList = res.friends || [];
+  if (net === 'receos' && res?.success) {
+    receosFriendsList = res.friends || [];
+    receosFriendsAt = Date.now();
+  }
   renderStellaFriends(res);
 }
 
@@ -8467,8 +8476,13 @@ $('stellaFriendsSearch')?.addEventListener('keydown', (e) => {
 window.radium?.onStellaFriends?.(queueStellaFriends);
 // "Checking…" turns into "Offline", and a friend gone quiet into offline, by
 // time passing rather than by an event, so the card is redrawn now and then.
+// Rec EOS's list is fetched from the server each time, so while its live
+// channel is up (receosLive) it is only fetched when the server says it
+// changed, and every few minutes in case a wake was lost.
 setInterval(() => {
-  if (stellaLike() && socialPlayer() && !document.hidden) refreshStellaFriends();
+  if (!stellaLike() || !socialPlayer() || document.hidden) return;
+  if (activeNetwork === 'receos' && receosLive && Date.now() - receosFriendsAt < RECEOS_LIVE_FALLBACK_MS) return;
+  refreshStellaFriends();
 }, 20000);
 
 // The LOG IN button a signed-out Rooms or People list shows.
@@ -8505,6 +8519,16 @@ document.addEventListener('keydown', (e) => {
 let receosPlayer = null;
 /// The last friends list, for starting a chat.
 let receosFriendsList = [];
+/// When Rec EOS's friends list was last fetched.
+let receosFriendsAt = 0;
+/// Whether the server's live channel is up (receos_live.rs): the server says
+/// when something changed, so the timers below only check now and then.
+let receosLive = false;
+const RECEOS_LIVE_FALLBACK_MS = 3 * 60 * 1000;
+/// Friends' presence wakes come at most every 10 s per friend (the server);
+/// with many friends moving, the list is still fetched at most this often.
+const RECEOS_FRIENDS_MIN_MS = 3 * 1000;
+let receosFriendsTimer = null;
 
 /// Stella and Rec EOS share the friends list, invites and room tiles.
 function stellaLike(net = activeNetwork) {
@@ -8594,7 +8618,9 @@ function applyReceosAuth(player, { expired = false } = {}) {
     addLog(`Signed in to Rec EOS as @${receosPlayer.userName}`, 'ok', 'account');
     loadNotifications(notifSources.receos);
     pollReceos();
+    window.radium.receosLiveStart?.().catch(() => {});
   } else if (was) {
+    receosLive = false;
     addLog(expired ? 'Rec EOS sign-in expired, signed out' : 'Signed out of Rec EOS', 'info', 'account');
     if (expired) toast('Your Rec EOS sign-in expired. Please sign in again.', 'info');
   }
@@ -9215,10 +9241,53 @@ async function pollReceosOnce() {
 setInterval(() => {
   if (!receosPlayer) return;
   if (document.hidden && !notifPrefs().popups) return;
-  const every = isGameRunning ? CHAT_POLL_GAME_MS
+  const every = receosLive ? RECEOS_LIVE_FALLBACK_MS
+    : isGameRunning ? CHAT_POLL_GAME_MS
     : document.hidden || !document.hasFocus() ? CHAT_POLL_IDLE_MS : CHAT_POLL_MS;
   if (Date.now() - receosLastPoll >= every - 1000) pollReceos();
 }, CHAT_POLL_MS);
+
+/// The friends list again, soon: a burst of wakes is one fetch, and never
+/// closer together than RECEOS_FRIENDS_MIN_MS. Hidden or on another network,
+/// it is only marked stale, for the next look (the 20 s tick above).
+function receosFriendsChanged() {
+  if (document.hidden || activeNetwork !== 'receos') {
+    receosFriendsAt = 0;
+    return;
+  }
+  if (receosFriendsTimer) return;
+  const wait = Math.max(250, RECEOS_FRIENDS_MIN_MS - (Date.now() - receosFriendsAt));
+  receosFriendsTimer = setTimeout(() => {
+    receosFriendsTimer = null;
+    refreshStellaFriends();
+  }, wait);
+}
+
+// The server's live channel: what changed is fetched when it says so.
+window.radium?.onReceosLive?.(({ kind, why }) => {
+  if (kind === 'down') {
+    if (receosLive) addLog('Rec EOS live updates disconnected; checking every few seconds meanwhile.', 'info', 'account');
+    receosLive = false;
+    return;
+  }
+  // Up even if it connected before the page heard of the sign-in.
+  if (kind === 'connected') receosLive = true;
+  if (!receosPlayer) return;
+  if (kind === 'connected') {
+    // What came in while it was down.
+    receosFriendsChanged();
+    pollReceos();
+    return;
+  }
+  if (kind !== 'sync') return;
+  // A friend online, offline or in another room: only the friends list.
+  if (why === 'presence') return receosFriendsChanged();
+  // A request, a new friend, unfriended: the list and the bell.
+  if (why === 'relationship') receosFriendsChanged();
+  // Anything else (a message, chat, cheer, invite): new things for the bell
+  // and chats. A poll already on its way may have missed it, so once more after.
+  if (receosPolling) setTimeout(pollReceos, 1000); else pollReceos();
+});
 
 // Back from the game: what came in while away counts as read now, and a
 // check right away instead of at the next tick.
