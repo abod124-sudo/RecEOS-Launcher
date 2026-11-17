@@ -3706,7 +3706,7 @@ function updateDownloadCta() {
 function setDlStep(active) {
   const order = ['download', 'extract', 'done'];
   const activeIdx = order.indexOf(active);
-  document.querySelectorAll('#dlSteps .dlp-step').forEach((el) => {
+  document.querySelectorAll('#dlSteps [data-step]').forEach((el) => {
     const idx = order.indexOf(el.dataset.step);
     el.classList.remove('active', 'done');
     if (idx < activeIdx) el.classList.add('done');
@@ -3718,9 +3718,8 @@ function setDlStep(active) {
 /// so its steps read Verify / Repair / Done; a download puts them back.
 function setDlStepLabels(first = 'Download', second = 'Extract', third = 'Done') {
   const labels = { download: first, extract: second, done: third };
-  document.querySelectorAll('#dlSteps .dlp-step').forEach((el) => {
-    const idx = el.querySelector('.dlp-step-idx');
-    el.replaceChildren(...(idx ? [idx] : []), document.createTextNode(labels[el.dataset.step] || ''));
+  document.querySelectorAll('#dlSteps [data-step]').forEach((el) => {
+    el.textContent = labels[el.dataset.step] || '';
   });
 }
 
@@ -3739,9 +3738,26 @@ function updateDlButtons() {
                       : needsRepair   ? '⬇ REPAIR'
                       :                 '⬇ DOWNLOAD';
   }
-  if (pauseBtn) pauseBtn.textContent = isPaused ? '▶ Resume' : '⏸ Pause';
-  // For skins that draw a paused bar differently (Vista/7's yellow one).
+  setPauseLabel(isPaused);
   $('dlProgressBlock')?.classList.toggle('is-paused', isPaused);
+}
+
+/// The hero's progress readout, in place of PLAY / DOWNLOAD while it shows.
+function showDlPanel(on) {
+  const block = $('dlProgressBlock');
+  if (block) block.style.display = on ? '' : 'none';
+  document.body.classList.toggle('client-busy', on);
+}
+
+/// Pause reads Resume while the download is paused.
+function setPauseLabel(paused) {
+  const btn = $('btnPauseDl');
+  if (!btn) return;
+  const text = paused ? 'Resume' : 'Pause';
+  btn.classList.toggle('is-resume', paused);
+  btn.setAttribute('aria-label', text);
+  const label = btn.querySelector('.hero-dl-btn-text');
+  if (label) label.textContent = text;
 }
 
 // `opts.resuming` keeps the current bar position instead of snapping back to 0%,
@@ -3749,10 +3765,9 @@ function updateDlButtons() {
 function setDownloadUI(downloading, opts = {}) {
   isDownloading = downloading;
   if (downloading) { isPaused = false; isCancelling = false; extractEta = null; dlResumable = false; }
-  const block = $('dlProgressBlock');
   const pauseBtn = $('btnPauseDl');
   if (downloading) {
-    if (block) block.style.display = 'block';
+    showDlPanel(true);
     // Shown once the server is known to let it continue; see updateDlProgress().
     if (pauseBtn) pauseBtn.style.display = 'none';
     setStatLabels('Speed', 'Transferred', 'ETA');
@@ -3760,12 +3775,12 @@ function setDownloadUI(downloading, opts = {}) {
     setDlStep('download');
     if (!opts.resuming) {
       const fill = $('dlBarFill'); if (fill) { fill.classList.remove('indeterminate'); applyBarFill(fill, 0); }
-      const pctEl = $('dlPctLabel'); if (pctEl) pctEl.textContent = '0%';
+      const pctEl = $('dlPctLabel'); if (pctEl) { pctEl.textContent = '0%'; pctEl.hidden = false; }
     }
   } else if (!isPaused) {
     // Fully idle — hide the panel. (A paused download keeps its panel visible;
     // see setPausedUI.)
-    if (block) block.style.display = 'none';
+    showDlPanel(false);
   }
   updateDlButtons();
 }
@@ -3776,8 +3791,7 @@ function setDownloadUI(downloading, opts = {}) {
 function setPausedUI(info = {}) {
   isDownloading = false;
   isPaused = true;
-  const block = $('dlProgressBlock');
-  if (block) block.style.display = 'block';
+  showDlPanel(true);
   const pauseBtn = $('btnPauseDl'); if (pauseBtn) pauseBtn.style.display = '';
   setStatLabels('Speed', 'Transferred', 'ETA');
   const phaseEl = $('dlPhaseLabel'); if (phaseEl) phaseEl.textContent = 'Paused';
@@ -3786,20 +3800,20 @@ function setPausedUI(info = {}) {
   if (typeof info.total === 'number' && info.total > 0 && typeof info.downloaded === 'number') {
     const pct = Math.min(99, Math.floor((info.downloaded / info.total) * 100));
     const fill = $('dlBarFill'); if (fill) { fill.classList.remove('indeterminate'); applyBarFill(fill, pct); }
-    const pctEl = $('dlPctLabel'); if (pctEl) pctEl.textContent = `${pct}%`;
+    const pctEl = $('dlPctLabel'); if (pctEl) { pctEl.textContent = `${pct}%`; pctEl.hidden = false; }
     const sizeEl = $('dlSizeLabel'); if (sizeEl) sizeEl.textContent = `${formatBytes(info.downloaded)} / ${formatBytes(info.total)}`;
   }
   setDlStep('download');
   updateDlButtons();
 }
 
-// The retro-family themes draw the progress bar as discrete blocks, via a
+// The retro skins draw the progress bar as discrete blocks, via a
 // repeating gradient with a 10px period (8px block + 2px gap). A plain
 // percentage width slices the final block mid-cube, so snap the fill to whole
 // blocks. Themes that paint a solid bar (the modern family, Vista/7) are
 // detected from the computed background and keep the exact percentage.
 function applyBarFill(fill, pct) {
-  // Must match the repeating-gradient period in .dlp-bar-fill (8px block + 2px gap).
+  // Must match the repeating-gradient period of the skins' --bar-fill (8px block + 2px gap).
   const SEGMENT_PX = 10;
   if (!fill) return;
   fill.dataset.pct = String(pct);
@@ -3822,7 +3836,7 @@ function applyBarFill(fill, pct) {
 /// The bar for a download of unknown size (Stella's server sends none). On
 /// the block-drawn skins it is a marquee: a run of whole blocks stepping
 /// across the track one block at a time, as Windows draws one (see
-/// `.dlp-bar-fill.indeterminate.segmented` in style.css). The steps have to
+/// `.hero-dl-fill.indeterminate.segmented` in skins/02-controls.css). The steps have to
 /// land on the block grid, so the track's width in whole blocks is handed to
 /// the CSS here — and again on resize, since it is in pixels.
 function applyIndeterminateBar(fill) {
@@ -3905,7 +3919,7 @@ function updateDlProgress({ phase, pct = 0, downloaded = 0, total = 0, speed = 0
     dlResumable = resumable;
     // A pause the backend let go of: put the button back as it was.
     if (pauseRefused) {
-      const b = $('btnPauseDl'); if (b) b.textContent = '⏸ Pause';
+      setPauseLabel(false);
       toast("This download can't be paused. It's still going.", 'info', 4000);
     }
     if (restarted) {
@@ -3948,7 +3962,11 @@ function updateDlProgress({ phase, pct = 0, downloaded = 0, total = 0, speed = 0
       applyIndeterminateBar(fill);
     }
   }
-  if (pctEl)   pctEl.textContent = pct >= 0 ? `${pct}%` : '—';
+  if (pctEl) {
+    // No total, no percentage: the sliding bar says it is working.
+    pctEl.textContent = pct >= 0 ? `${pct}%` : '';
+    pctEl.hidden = pct < 0;
+  }
 
   if (phase === 'extract') {
     setDlStep('extract');
@@ -4509,13 +4527,16 @@ async function refreshStellaPatch({ manual = false } = {}) {
   }
 }
 
-async function runStellaPatchUpdate() {
+/// Installs the patch. `beforePlay` is the update PLAY runs on its way to
+/// starting the game (see receosUpdateBeforePlay), so the launch already in
+/// progress doesn't count as the game being in the way. True if it worked.
+async function runStellaPatchUpdate({ beforePlay = false } = {}) {
   const net = activeNetwork;
-  if (stellaPatchUpdating || !networkInfo(net).hasPatch) return;
+  if (stellaPatchUpdating || !networkInfo(net).hasPatch) return false;
   const name = net === 'receos' ? 'Rec EOS' : 'Stella';
-  if (isGameRunning || isGameLaunching) {
+  if (isGameRunning || (isGameLaunching && !beforePlay)) {
     toast('Close the game before updating.', 'warn', 4000);
-    return;
+    return false;
   }
   stellaPatchUpdating = true;
   applyStellaPatchUI();
@@ -4559,9 +4580,62 @@ async function runStellaPatchUpdate() {
     toast(`Update failed: ${err}`, 'error', 5000);
   }
   applyStellaPatchUI();
+  return !!result?.success;
 }
 
 $('btnStellaUpdate')?.addEventListener('click', () => runStellaPatchUpdate());
+
+/// How long PLAY waits on Rec EOS's update server before starting anyway.
+const RECEOS_PLAY_CHECK_MS = 8000;
+
+/// Rec EOS, on every launch (PLAY, a friend's JOIN, a room's PLAY): ask the
+/// server for the newest build right then, whatever the last check said, and
+/// install it before the game starts, the way Steam does. A server that
+/// doesn't answer doesn't stop an installed mod from playing. Stella is left
+/// out on purpose: there, pressing UPDATE is what accepts a build.
+/// False when the launch should stop.
+async function receosUpdateBeforePlay() {
+  if (activeNetwork !== 'receos' || !isInstalled) return true;
+  const label = $('playText');
+  if (label && !isGameRunning) label.textContent = 'CHECKING…';
+  const seq = ++stellaPatchCheckSeq;
+  let status;
+  try {
+    status = await Promise.race([
+      patchApi('receos').status(),
+      sleep(RECEOS_PLAY_CHECK_MS).then(() => ({ success: false, installed: true, error: 'The update server took too long to answer.' })),
+    ]);
+  } catch (e) {
+    status = { success: false, installed: true, error: String(e) };
+  }
+  if (label && !isGameRunning) label.textContent = 'PLAY';
+  if (activeNetwork !== 'receos') return false;
+
+  if (!status?.success) {
+    // Without an answer, the last check is the best guess about whether the
+    // installed mod is still let in.
+    const known = stellaPatchNetwork === 'receos' ? stellaPatch : null;
+    if (status?.installed === false || known?.required === true) {
+      addLog(`Couldn't check for a Rec EOS update: ${status?.error || 'Unknown error'}`, 'error', 'install');
+      toast("Couldn't reach Rec EOS's update server. Try again in a moment.", 'error', 5000);
+      return false;
+    }
+    addLog(`Couldn't check for a Rec EOS update before playing (${status?.error || 'Unknown error'}). Starting the installed build.`, 'warn', 'install');
+    return true;
+  }
+  if (seq === stellaPatchCheckSeq) {
+    stellaPatch = status;
+    stellaPatchNetwork = 'receos';
+    stellaPatchCheckedAt = Date.now();
+    applyStellaPatchUI();
+  }
+  if (!status.updateAvailable) return true;
+
+  addLog(status.installed
+    ? `Rec EOS build ${status.latestBuild} is out${status.installedBuild ? ` (you have ${status.installedBuild})` : ''}. Installing it before the game starts...`
+    : 'Adding Rec EOS to the game before it starts...', 'info', 'install');
+  return runStellaPatchUpdate({ beforePlay: true });
+}
 
 function onPatchProgress(p) {
   if (!stellaPatchUpdating || !p) return;
@@ -4617,7 +4691,7 @@ $('btnPauseDl')?.addEventListener('click', () => {
     // update the label now so the click feels responsive.
     window.radium?.pauseDownload();
     addLog('Pausing download...', 'info', 'install');
-    const b = $('btnPauseDl'); if (b) b.textContent = '▶ Resume';
+    setPauseLabel(true);
   }
 });
 
@@ -5773,6 +5847,11 @@ async function proceedAfterAvCheck() {
 // game's patched files aren't quarantined. Flows into the Smart App Control
 // check, then the Steam check, then the actual launch.
 async function checkAvAndLaunch() {
+  if (!(await receosUpdateBeforePlay())) {
+    isGameLaunching = false;
+    syncTray();
+    return;
+  }
   if (platformCapabilities.linux) { await checkSteamAndLaunch(); return; }
   // Vanilla's game lives in Vanilla's launcher's folder, which this exclusion
   // (Rec EOS's own client folders) doesn't cover — nothing to offer there.

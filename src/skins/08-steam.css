@@ -204,7 +204,6 @@ body.theme-steam-green {
   --seg-active-bg: #3e4637;
   --seg-active-fg: #c4b550;
   --seg-active-shadow: var(--sunken);
-  --seg-label: #c4b550;
   --seg-press-bg: #3e4637;
   --seg-press-fg: #dedfd6;
   --seg-press-shadow: var(--sunken);
@@ -261,8 +260,6 @@ body.theme-steam-green {
   & .caption-header,
   & .profile-side-title { box-shadow: 0 1px 0 #6a7661; }
   & .manage-sep { box-shadow: 0 1px 0 #6a7661; }
-  & .dlp-dot { animation: sk-blink 1s steps(1, end) infinite; }
-  & .dlp-step-idx { border-radius: 0; }
   /* 1px right and down: padding traded across PLAY's fixed box (see the
      Win9x rule in 05-windows-classic.css for why not padding-left alone). */
   & .home-hero-bar :is(.btn-play, .btn-download-big):is(:active, .is-pressed) { padding: 2px 21px 0 23px; }
@@ -481,7 +478,6 @@ body.theme-steam2010 {
   --seg-divider: 1px solid #0d0d0d;
   --seg-active-bg: linear-gradient(180deg, #8ec03f 0%, #6a9a2b 100%);
   --seg-active-fg: #ffffff;
-  --seg-label: #b0aeac;
   --seg-press-bg: rgba(0, 0, 0, 0.35);
   --seg-press-fg: #ffffff;
 
@@ -542,5 +538,4 @@ body.theme-steam2010 {
   --dur: 0.12s;
 
   & .nav-btn.active { font-weight: 700; }
-  & .dlp-step-idx { border-radius: 50%; }
 }

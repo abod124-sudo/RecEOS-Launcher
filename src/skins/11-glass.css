@@ -888,13 +888,6 @@
     rgba(0, 0, 0, 0.3) 40%,
     rgba(0, 0, 0, 0.62) 100%) !important;
 }
-:root body.glass-enabled .hero-mode-label {
-  font-family: var(--font-ui) !important;
-  font-size: 10px !important;
-  font-weight: 600 !important;
-  letter-spacing: 0.6px !important;
-  color: rgba(255, 255, 255, 0.72) !important;
-}
 
 /* Segmented control: a clear track with a lens that glides between
    the two segments and overshoots slightly as it lands. */
@@ -1036,60 +1029,6 @@
 :root body.glass-enabled .home-panel {
   border-radius: 20px !important;
   padding: 14px !important;
-}
-
-/* ── Download progress ────────────────────────────────────────── */
-:root body.glass-enabled .dl-progress-block { border-radius: 22px !important; }
-:root body.glass-enabled .dlp-phase,
-:root body.glass-enabled .dlp-pct,
-:root body.glass-enabled .dlp-stat-val { color: #ffffff !important; }
-:root body.glass-enabled .dlp-stat-label { color: var(--text-muted) !important; }
-:root body.glass-enabled .dlp-dot {
-  background: var(--lg-accent) !important;
-  border-radius: 50% !important;
-  box-shadow: 0 0 10px rgba(10, 132, 255, 0.9) !important;
-  animation: dlp-pulse 1s ease-in-out infinite !important;
-}
-:root body.glass-enabled .dlp-bar-wrap {
-  background: rgba(255, 255, 255, 0.10) !important;
-  border: none !important;
-  border-radius: 999px !important;
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25) !important;
-}
-:root body.glass-enabled .dlp-bar-fill {
-  background: linear-gradient(90deg, var(--lg-accent), #64d2ff) !important;
-  border-radius: 999px !important;
-  box-shadow: 0 0 12px rgba(10, 132, 255, 0.55) !important;
-}
-:root body.glass-enabled .dlp-step,
-:root body.glass-enabled .dlp-stat {
-  background: rgba(255, 255, 255, 0.06) !important;
-  border: none !important;
-  border-radius: 12px !important;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06) !important;
-}
-:root body.glass-enabled .dlp-step { opacity: 0.6 !important; }
-:root body.glass-enabled .dlp-step.active,
-:root body.glass-enabled .dlp-step.done { opacity: 1 !important; }
-:root body.glass-enabled .dlp-step.active {
-  color: #ffffff !important;
-  background: rgba(255, 255, 255, 0.14) !important;
-  box-shadow: var(--lg-control-rim) !important;
-}
-:root body.glass-enabled .dlp-step.done { color: rgba(255, 255, 255, 0.85) !important; }
-:root body.glass-enabled .dlp-step-idx {
-  background: rgba(255, 255, 255, 0.16) !important;
-  color: rgba(255, 255, 255, 0.85) !important;
-  border: none !important;
-  border-radius: 50% !important;
-}
-:root body.glass-enabled .dlp-step.active .dlp-step-idx {
-  background: #ffffff !important;
-  color: #0b0c10 !important;
-}
-:root body.glass-enabled .dlp-step.done .dlp-step-idx {
-  background: rgba(255, 255, 255, 0.65) !important;
-  color: #0b0c10 !important;
 }
 
 /* ── Settings ─────────────────────────────────────────────────── */

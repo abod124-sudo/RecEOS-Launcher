@@ -275,8 +275,7 @@
               <span class="play-text" id="playText">PLAY</span>
             </button>
             <div class="hero-mode">
-              <span class="hero-mode-label">PLAY MODE</span>
-              <div class="mode-toggle-wrap">
+              <div class="mode-toggle-wrap" role="group" aria-label="Play mode">
                 <div class="mode-slider" id="modeSlider"></div>
                 <button class="mode-btn active" id="modeScreen" data-mode="screen">SCREEN</button>
                 <button class="mode-btn" id="modeVR" data-mode="vr">VR</button>
@@ -295,6 +294,45 @@
           <div class="home-hero-bar not-installed-only">
             <button class="btn-download-big" id="btnDownload">⬇ DOWNLOAD</button>
             <span class="hero-note" id="heroDownloadNote" style="display:none"></span>
+          </div>
+          <!-- A download, file check or repair in progress. Takes both bars'
+               place on the scrim while it runs (body.client-busy), drawn the
+               same in every skin like the rest of the hero. The ids are what
+               app.js and the tray panel read; #dlSteps is relabelled for
+               Verify / Repair and the three stats for extraction. -->
+          <div class="hero-dl" id="dlProgressBlock" style="display:none" aria-live="polite">
+            <div class="hero-dl-head">
+              <div class="hero-dl-title">
+                <span class="hero-dl-phase" id="dlPhaseLabel">Downloading...</span>
+                <div class="hero-dl-steps" id="dlSteps">
+                  <span class="hero-dl-step active" data-step="download">Download</span>
+                  <span class="hero-dl-step" data-step="extract">Extract</span>
+                  <span class="hero-dl-step" data-step="done">Done</span>
+                </div>
+              </div>
+              <span class="hero-dl-pct" id="dlPctLabel">0%</span>
+            </div>
+            <div class="hero-dl-track"><div class="hero-dl-fill" id="dlBarFill"></div></div>
+            <div class="hero-dl-foot">
+              <div class="hero-dl-stats">
+                <div class="hero-dl-stat">
+                  <span class="hero-dl-stat-label" id="dlSpeedStatLabel">Speed</span>
+                  <span class="hero-dl-stat-val" id="dlSpeedLabel">—</span>
+                </div>
+                <div class="hero-dl-stat hero-dl-stat-wide">
+                  <span class="hero-dl-stat-label" id="dlSizeStatLabel">Transferred</span>
+                  <span class="hero-dl-stat-val" id="dlSizeLabel">—</span>
+                </div>
+                <div class="hero-dl-stat">
+                  <span class="hero-dl-stat-label" id="dlEtaStatLabel">ETA</span>
+                  <span class="hero-dl-stat-val" id="dlEtaLabel">—</span>
+                </div>
+              </div>
+              <div class="hero-dl-actions">
+                <button class="hero-dl-btn" id="btnPauseDl" aria-label="Pause"><span class="hero-dl-icon" aria-hidden="true"></span><span class="hero-dl-btn-text">Pause</span></button>
+                <button class="hero-dl-btn hero-dl-cancel" id="btnCancelDl" aria-label="Cancel"><span class="hero-dl-icon" aria-hidden="true"></span><span class="hero-dl-btn-text">Cancel</span></button>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -340,45 +378,9 @@
         </div>
         </div>
 
-        <!-- Download slot. Holds only the progress panel now that the CTA
-             lives on the hero, so it renders nothing until a download starts. -->
-        <div id="downloadSection">
-
-          <!-- Progress (hidden until downloading) -->
-          <div class="download-section dl-progress-block" id="dlProgressBlock" style="display:none">
-            <div class="dlp-top">
-              <div class="dlp-phase-wrap">
-                <span class="dlp-dot"></span>
-                <span class="dlp-phase" id="dlPhaseLabel">Downloading...</span>
-              </div>
-              <span class="dlp-pct" id="dlPctLabel">0%</span>
-            </div>
-            <div class="dlp-bar-wrap">
-              <div class="dlp-bar-fill" id="dlBarFill"></div>
-            </div>
-            <div class="dlp-steps" id="dlSteps">
-              <div class="dlp-step active" data-step="download"><span class="dlp-step-idx">1</span>Download</div>
-              <div class="dlp-step" data-step="extract"><span class="dlp-step-idx">2</span>Extract</div>
-              <div class="dlp-step" data-step="done"><span class="dlp-step-idx">3</span>Done</div>
-            </div>
-            <div class="dlp-stats">
-              <div class="dlp-stat">
-                <span class="dlp-stat-label" id="dlSpeedStatLabel">Speed</span>
-                <span class="dlp-stat-val" id="dlSpeedLabel">—</span>
-              </div>
-              <div class="dlp-stat">
-                <span class="dlp-stat-label" id="dlSizeStatLabel">Transferred</span>
-                <span class="dlp-stat-val" id="dlSizeLabel">—</span>
-              </div>
-              <div class="dlp-stat">
-                <span class="dlp-stat-label" id="dlEtaStatLabel">ETA</span>
-                <span class="dlp-stat-val" id="dlEtaLabel">—</span>
-              </div>
-              <button class="btn-cancel-dl btn-pause-dl" id="btnPauseDl">⏸ Pause</button>
-              <button class="btn-cancel-dl" id="btnCancelDl">Cancel</button>
-            </div>
-          </div>
-        </div>
+        <!-- Download slot. Empty now that a download's progress shows on the
+             hero; kept because the home layouts place it. -->
+        <div id="downloadSection"></div>
 
         <!-- ── Status ──────────────────────────────────────────────
              One strip of three, each an icon, a value and what it is.

@@ -1143,179 +1143,166 @@ body:is(.theme-winxp, .theme-royalenoir):not(.glass-enabled) :is(.card-cheer, .c
 .inline-dot.online { background: var(--status-online); }
 
 
-/* ─── Download progress panel (inset) ───────────────────────────────── */
-/* JS shows the slot with display:flex; column direction makes the progress
-   panel stretch to full width instead of shrinking to its content. */
+/* ─── Download progress, on the hero ─────────────────────────────────
+   A download, file check or repair shows on the hero's scrim in place of
+   PLAY / DOWNLOAD (body.client-busy, set by showDlPanel() in app.js), the
+   way a store library shows one on the game's header. Like the rest of the
+   hero it is the same in every skin: one line of status with the percentage,
+   a slim bar, and the numbers as plain text, not a panel of boxes. */
 #downloadSection { flex-direction: column; }
-.dl-progress-block {
-  position: relative; z-index: 1;
-  margin-top: 10px;
-  padding: 12px 14px;
+body.client-busy .home-hero-bar { display: none !important; }
+
+.hero-dl {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 2;
+  display: flex; flex-direction: column; gap: 10px;
+  /* The scrim's runway, as .home-hero-bar has. */
+  padding: 60px 20px 16px;
+  border-bottom-left-radius: inherit;
+  border-bottom-right-radius: inherit;
+  background: linear-gradient(180deg,
+    rgba(0,0,0,0) 0%,
+    rgba(0,0,0,0.6) 20%,
+    rgba(0,0,0,0.9) 34%,
+    rgba(0,0,0,1) 48%,
+    rgba(0,0,0,1) 100%);
+  color: #ffffff;
+  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
 }
-/* Keep the panel's texture pseudo-element behind the progress content. */
-.dl-progress-block > * { position: relative; z-index: 1; }
-.dlp-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-.dlp-phase-wrap { display: flex; align-items: center; gap: 8px; min-width: 0; }
-/* Retro pixel indicator LED: a hard-edged square that blinks on/off like a
-   CRT status light, instead of a round softly-pulsing glow. Modern-family
-   and glass themes override this back to the round glow further below. */
-.dlp-dot {
-  width: 8px; height: 8px; flex-shrink: 0; border-radius: 0;
-  background: var(--green);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--green) 25%, transparent);
-  image-rendering: pixelated;
-  animation: dlp-blink 1s steps(1, end) infinite;
+body.animations-enabled .hero-dl { animation: heroDlIn 0.32s cubic-bezier(0.16, 1, 0.3, 1) backwards; }
+@keyframes heroDlIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+.hero-dl-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
+.hero-dl-title { display: flex; align-items: baseline; gap: 14px; min-width: 0; }
+.hero-dl-phase {
+  font-size: 16px; font-weight: 700; letter-spacing: 0.01em;
+  white-space: nowrap;
 }
-/* Hard on/off blink (no smooth fade) — the 49%→50% flip is effectively
-   instant, so with steps() it reads as a crisp retro flicker. */
-@keyframes dlp-blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0.15; } }
-@keyframes dlp-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
-.dlp-phase { font-family: var(--font-mono); font-size: 11px; font-weight: bold; color: var(--text); letter-spacing: 0.5px; }
-.dlp-pct { font-family: var(--font-mono); font-size: 17px; line-height: 1; color: var(--green); font-weight: bold; }
-.dlp-bar-wrap {
-  height: 18px;
-  background: var(--bg-dark);
-  border: 2px solid;
-  border-color: var(--border-dark) var(--border-light) var(--border-light) var(--border-dark);
-  margin-bottom: 10px;
+.hero-dl-pct { font-size: 26px; font-weight: 800; line-height: 0.9; letter-spacing: -0.01em; }
+
+/* Download › Extract › Done, as a breadcrumb. */
+.hero-dl-steps {
+  display: flex; align-items: baseline; min-width: 0;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+  white-space: nowrap; overflow: hidden;
+}
+.hero-dl-step { color: rgba(255,255,255,0.38); transition: color 0.2s ease; }
+.hero-dl-step + .hero-dl-step::before {
+  content: ''; display: inline-block;
+  width: 5px; height: 5px; margin: 0 9px 1px 8px;
+  border-top: 1.5px solid rgba(255,255,255,0.3);
+  border-right: 1.5px solid rgba(255,255,255,0.3);
+  transform: rotate(45deg);
+}
+.hero-dl-step.done { color: rgba(255,255,255,0.62); }
+.hero-dl-step.active { color: #ffffff; }
+
+.hero-dl-track {
+  position: relative;
+  height: 6px; border-radius: 999px; overflow: hidden;
+  background: rgba(255,255,255,0.14);
+}
+.hero-dl-fill {
+  position: relative;
+  height: 100%; width: 0%;
+  border-radius: inherit;
+  background: #ffffff;
+  box-shadow: 0 0 12px rgba(255,255,255,0.45);
+  transition: width 0.3s ease;
   overflow: hidden;
-  padding: 2px;
 }
-.dlp-bar-fill {
-  height: 100%;
-  width: 0%;
-  background: repeating-linear-gradient(
-    90deg,
-    var(--green),
-    var(--green) 8px,
-    transparent 8px,
-    transparent 10px
-  );
-  /* No width animation: the retro bar should tick over one whole block at a
-     time, the way a Win9x progress bar does, rather than sliding smoothly.
-     The solid-bar themes below opt back into the smooth fill. */
-  transition: none;
-  box-shadow: none;
+/* A light running along the fill while it is moving. */
+.hero-dl-fill::after {
+  content: ''; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent 0%, rgba(120,150,190,0.35) 50%, transparent 100%);
+  background-size: 200px 100%; background-repeat: no-repeat;
+  animation: heroDlSheen 1.6s linear infinite;
 }
-.dlp-bar-fill::after { display: none; } /* Disable modern shimmer */
-/* Indeterminate state: used when the download size is unknown (no
-   Content-Length). A partial bar slides across so it reads as "working"
-   rather than "finished". The !important width overrides the inline width
-   the JS sets during a normal, size-known download. */
-.dlp-bar-fill.indeterminate {
-  width: 35% !important;
-  animation: dlp-indeterminate 1.1s ease-in-out infinite;
+@keyframes heroDlSheen { from { background-position: -200px 0; } to { background-position: calc(100% + 200px) 0; } }
+.hero-dl.is-paused .hero-dl-fill { background: rgba(255,255,255,0.55); box-shadow: none; }
+.hero-dl.is-paused .hero-dl-fill::after { display: none; }
+/* Size unknown (the server sent none): a run sliding across, so it reads as
+   working rather than finished. */
+.hero-dl-fill.indeterminate {
+  width: 30% !important;
+  animation: heroDlSlide 1.2s ease-in-out infinite;
 }
-@keyframes dlp-indeterminate {
-  0%   { transform: translateX(-110%); }
-  100% { transform: translateX(300%); }
-}
-/* The block-drawn skins: a Windows-style marquee rather than the slide above.
-   Slid, the blocks smeared at speed, came in cut in half at both ends, and
-   ran over the bar's frame, since the track clips at its frame rather than
-   inside it. Here the fill stays the size of the track and the marquee is its
-   background: an 8-block tile stepped across one block (10px) at a time, so
-   it is clipped to the inside of the track, and its blocks land where a
-   determinate bar's do. applyIndeterminateBar() in app.js adds .segmented and
-   supplies the track's width in whole blocks. */
-.dlp-bar-wrap > .dlp-bar-fill.indeterminate.segmented {
-  --marquee: 80px;
-  width: 100% !important;
-  background-size: var(--marquee) 100%;
-  background-repeat: no-repeat;
-  animation: dlp-marquee calc(var(--bar-steps, 80) * 35ms) steps(var(--bar-steps, 80)) infinite;
-}
-@keyframes dlp-marquee {
+.hero-dl-fill.indeterminate::after { display: none; }
+@keyframes heroDlSlide { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+/* The retro skins' block marquee (skins/02-controls.css). */
+@keyframes heroDlMarquee {
   from { background-position: calc(-1 * var(--marquee)) 0; }
   to   { background-position: var(--bar-track, 720px) 0; }
 }
+@media (prefers-reduced-motion: reduce) {
+  .hero-dl-fill::after { display: none; }
+  .hero-dl-fill.indeterminate { animation: none; width: 100% !important; opacity: 0.5; }
+}
 
-/* Phase stepper: Download → Extract → Done */
-.dlp-steps { display: flex; gap: 6px; margin-bottom: 10px; }
-.dlp-step {
-  flex: 1; display: flex; align-items: center; gap: 6px;
-  font-family: var(--font-mono); font-size: 9px; font-weight: bold;
-  letter-spacing: 0.5px; text-transform: uppercase;
-  color: var(--text-muted);
-  background: var(--bg-panel);
-  border: 1px solid var(--border-dark);
-  padding: 4px 8px;
-  opacity: 0.55;
-  transition: opacity 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+.hero-dl-foot { display: flex; align-items: center; gap: 20px; min-height: 32px; }
+.hero-dl-stats { display: flex; align-items: center; gap: 28px; flex: 1; min-width: 0; }
+.hero-dl-stat { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex-shrink: 0; }
+.hero-dl-stat-wide { flex-shrink: 1; }
+.hero-dl-stat-label {
+  font-size: 10px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+  color: rgba(255,255,255,0.5);
 }
-.dlp-step-idx {
-  width: 15px; height: 15px; flex-shrink: 0;
-  display: inline-flex; align-items: center; justify-content: center;
-  border-radius: 50%;
-  background: var(--bg-dark); border: 1px solid var(--border-dark);
-  color: var(--text-muted); font-size: 9px;
-}
-.dlp-step.active { opacity: 1; color: var(--green); border-color: var(--green-dim); }
-.dlp-step.active .dlp-step-idx { background: var(--green); color: var(--bg-dark); border-color: var(--green); }
-.dlp-step.done { opacity: 1; color: var(--green-dim); }
-.dlp-step.done .dlp-step-idx { background: var(--green-dim); color: var(--bg-dark); border-color: var(--green-dim); }
-
-/* Live stats: Speed · Transferred · ETA + Cancel */
-.dlp-stats { display: flex; align-items: stretch; gap: 8px; }
-.dlp-stat {
-  flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border-dark);
-  padding: 5px 8px;
-}
-.dlp-stat-label {
-  font-family: var(--font-mono); font-size: 8px; font-weight: bold;
-  letter-spacing: 0.5px; text-transform: uppercase; color: var(--text-muted);
-}
-.dlp-stat-val {
-  font-family: var(--font-mono); font-size: 11px; font-weight: bold;
-  color: var(--green-dim);
+.hero-dl-stat-val {
+  font-size: 13px; font-weight: 600; color: #ffffff;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.dlp-stats .btn-cancel-dl { flex-shrink: 0; align-self: stretch; white-space: nowrap; }
-.dlp-stats .btn-pause-dl { flex-shrink: 0; align-self: stretch; white-space: nowrap; }
 
-/* legacy layout kept so old references don't break */
-.dlp-bottom { display: flex; align-items: center; gap: 10px; font-family: var(--font-mono); font-size: 9px; color: var(--green-dim); }
-.dlp-bottom span { flex: 1; }
+.hero-dl-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.hero-dl-btn {
+  display: inline-flex; align-items: center; gap: 7px;
+  height: 32px; padding: 0 14px 0 12px;
+  border: 1px solid rgba(255,255,255,0.2); border-radius: 999px;
+  background: rgba(255,255,255,0.1);
+  color: #ffffff;
+  font-family: inherit; font-size: 12px; font-weight: 600; letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.12s ease;
+}
+.hero-dl-btn:hover { background: rgba(255,255,255,0.18); border-color: rgba(255,255,255,0.32); }
+.hero-dl-btn:is(:active, .is-pressed) { transform: scale(0.96); }
+.hero-dl-cancel:hover { background: rgba(239,68,68,0.22); border-color: rgba(248,113,113,0.5); }
+.hero-dl-icon {
+  width: 12px; height: 12px; flex-shrink: 0;
+  background: currentColor;
+  -webkit-mask: var(--icon) center / contain no-repeat;
+  mask: var(--icon) center / contain no-repeat;
+}
+#btnPauseDl .hero-dl-icon { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Crect x='2' y='1.5' width='3' height='9' rx='1'/%3E%3Crect x='7' y='1.5' width='3' height='9' rx='1'/%3E%3C/svg%3E"); }
+#btnPauseDl.is-resume .hero-dl-icon { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 1.8v8.4a.7.7 0 0 0 1.06.6l7-4.2a.7.7 0 0 0 0-1.2l-7-4.2A.7.7 0 0 0 3 1.8z'/%3E%3C/svg%3E"); }
+#btnCancelDl .hero-dl-icon { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 2.5l7 7M9.5 2.5l-7 7' stroke='black' stroke-width='1.8' stroke-linecap='round'/%3E%3C/svg%3E"); }
 
-/* ─── Modern themes: sleek download progress panel ──────────────────────
-   The retro dashed bar + square bevelled insets clash with the modern
-   themes' rounded cards. Give the progress panel a smooth accent-gradient
-   bar and rounded surfaces that match. */
-body.theme-moderndark .dl-progress-block {
-  border: 1px solid var(--border-light);
-  border-radius: 12px;
-  background: var(--bg-dark);
+/* Narrow windows: the buttons drop to their icons. */
+@media (max-width: 1000px) {
+  .hero-dl-stats { gap: 20px; }
+  .hero-dl-btn { width: 32px; padding: 0; justify-content: center; }
+  .hero-dl-btn-text { display: none; }
 }
-body.theme-moderndark .dlp-bar-wrap {
-  border: 1px solid var(--border-light);
-  border-radius: 8px;
-  padding: 3px;
+
+/* Spotlight: centred under the brand, at a readable width. */
+body.home-style-spotlight .hero-dl { padding: 72px max(20px, calc(50% - 340px)) 22px; }
+/* Compact: on the scrim at the right, like the actions it replaces. */
+body.home-style-compact .hero-dl {
+  top: 0; left: auto; width: min(520px, 62%);
+  justify-content: center; gap: 8px;
+  padding: 0 16px 0 64px;
+  border-bottom-left-radius: 0;
+  border-top-right-radius: inherit;
+  background: linear-gradient(90deg,
+    rgba(0, 0, 0, 0) 0%,
+    rgba(0, 0, 0, 0.6) 22%,
+    rgba(0, 0, 0, 0.92) 45%,
+    rgba(0, 0, 0, 1) 100%);
 }
-/* Smooth accent-gradient fill instead of the retro dashes */
-body.theme-moderndark .dlp-bar-fill {
-  background: linear-gradient(90deg, var(--green-dim), var(--green));
-  border-radius: 5px;
-  box-shadow: 0 0 10px color-mix(in srgb, var(--green) 55%, transparent);
-  transition: width 0.25s ease;
-}
-/* Modern-family themes keep the round, softly-pulsing glow dot. */
-body.theme-moderndark .dlp-dot {
-  width: 9px; height: 9px; border-radius: 50%;
-  box-shadow: 0 0 6px var(--green);
-  animation: dlp-pulse 1s ease-in-out infinite;
-}
-body.theme-moderndark .dlp-step,
-body.theme-moderndark .dlp-stat {
-  border: 1px solid var(--border-light);
-  border-radius: 8px;
-}
-/* Active step highlight uses the accent tint */
-body.theme-moderndark .dlp-step.active {
-  background: color-mix(in srgb, var(--green) 14%, var(--bg-panel));
-  border-color: color-mix(in srgb, var(--green) 45%, transparent);
-}
+body.home-style-compact .hero-dl-steps { display: none; }
+body.home-style-compact .hero-dl-pct { font-size: 20px; }
+body.home-style-compact .hero-dl-stats { gap: 16px; }
+body.home-style-compact .hero-dl-btn { width: 32px; padding: 0; justify-content: center; }
+body.home-style-compact .hero-dl-btn-text { display: none; }
 
 /* Buttons Outset Win2000 style */
 .btn-download-big, .btn-refresh, .btn-save, .btn-test-server, .btn-cancel-dl, .btn-kill, .btn-open-folder, .btn-reinstall, .btn-uninstall {
@@ -1634,10 +1621,6 @@ body.network-vanilla .status-dot.unknown {
     rgba(0,0,0,1) 100%);
 }
 .hero-mode { display: flex; flex-direction: column; gap: 4px; }
-.hero-mode-label {
-  font-family: var(--font-mono); font-size: 9px; font-weight: bold;
-  letter-spacing: 1px; color: rgba(255,255,255,0.72);
-}
 
 /* Primary action */
 .btn-play {
@@ -2236,7 +2219,7 @@ body.theme-moderndark .manage-sep {
    `transform: translateX(4px)` on hover — an item sliding toward the content it
    opens, which reads as a glitch on a lone icon button in a horizontal bar. */
 #btnManageClient {
-  margin-left: auto !important; /* past PLAY MODE, to the far end of the bar */
+  margin-left: auto !important; /* past the play-mode switch, to the far end of the bar */
   padding: 0 !important;
 }
 #btnManageClient:hover,

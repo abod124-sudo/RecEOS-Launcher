@@ -422,10 +422,8 @@ body:is(.theme-neondark, .theme-modernlight, .theme-moderngreen,
     animation: sk-shimmer 1.4s linear infinite;
   }
 
-  /* Views that appear inside a tab: room and profile detail, the download
-     panel when a download starts. */
-  & :is(#roomsDetailView, #peopleDetailView):not(.hidden),
-  & .dl-progress-block {
+  /* Views that appear inside a tab: room and profile detail. */
+  & :is(#roomsDetailView, #peopleDetailView):not(.hidden) {
     animation: sk-tab-in 0.35s cubic-bezier(0.16, 1, 0.3, 1) backwards;
   }
 
@@ -473,8 +471,6 @@ body:is(.theme-neondark, .theme-modernlight, .theme-moderngreen,
     transition: transform 0.24s var(--ease);
   }
 
-  & .dlp-dot { box-shadow: 0 0 0 3px var(--accent-soft); }
-  & .dlp-step-idx { border-radius: 50%; }
   /* The gear is not restyled here: it keeps the skin's push-button look from
      02-controls.css — a rounded square in --raised with a --line-strong edge,
      dark on the dark skins and white on the light ones — which is what it was

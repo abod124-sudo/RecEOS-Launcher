@@ -271,12 +271,6 @@ body:not(.glass-enabled) {
   & .tag-scroll:hover { background: var(--btn-hover-bg); }
 
   /* ── Play mode ────────────────────────────────────────────────────── */
-  & .hero-mode-label {
-    font-family: var(--font-ui);
-    font-size: 9px;
-    letter-spacing: 1px;
-    color: var(--seg-label);
-  }
   & .mode-toggle-wrap {
     position: relative;
     display: inline-flex;
@@ -329,57 +323,129 @@ body:not(.glass-enabled) {
   }
   & .hero-note { font-family: var(--font-ui); font-size: 10px; }
 
-  /* ── Download progress ────────────────────────────────────────────── */
-  & .dl-progress-block { margin-top: 10px; padding: 12px 14px; }
-  & .dlp-phase { font-family: var(--font-ui); font-size: 12px; color: var(--text); letter-spacing: 0; }
-  & .dlp-pct { font-family: var(--font-ui); font-size: 16px; color: var(--accent-text); }
-  & .dlp-dot {
-    width: 8px; height: 8px;
-    background: var(--accent);
-    border-radius: var(--dot-radius);
-    box-shadow: none;
-    animation: sk-pulse 1.2s ease-in-out infinite;
+  /* ── Download progress (on the hero) ──────────────────────────────── */
+  /* The modern skins keep the hero's own readout (style.css). The others
+     draw it with their own parts, as they draw PLAY on the same scrim: the
+     skin's progress bar (Win9x blocks, XP's, Aero's gel, Aqua's stripes),
+     its push buttons and its face. */
+  &:not(.theme-neondark, .theme-modernlight, .theme-moderngreen,
+        .theme-blackandwhite, .theme-blackandwhite-inverted) {
+    /* No fade over the art, which no software of their day drew: a flat
+       strip in the skin's own panel colours along the banner's foot, like a
+       status bar. */
+    /* PLAY's bar is the same strip, so the banner looks the same whether
+       or not something is downloading. */
+    & :is(.hero-dl, .home-hero-bar) {
+      isolation: isolate;
+      color: var(--panel-fg);
+      background: var(--win-bg);
+      border-top: var(--panel-border);
+      box-shadow: var(--panel-shadow);
+    }
+    /* The panel's tint over the window's own ground, as a layer of its own:
+       Aqua's is a wash meant for its pinstripes and Steam 2010's a gradient,
+       so they can't be stacked into one background. */
+    & :is(.hero-dl, .home-hero-bar)::before {
+      content: '';
+      position: absolute; inset: 0; z-index: -1;
+      border-radius: inherit;
+      background: var(--panel-bg);
+      pointer-events: none;
+    }
+    &.home-style-compact :is(.hero-dl, .home-hero-bar) {
+      background: var(--win-bg);
+      border-top: 0;
+      border-left: var(--panel-border);
+    }
+    & .hero-dl {
+      font-family: var(--font-ui); font-variant-numeric: normal;
+      gap: 7px;
+      padding: 10px 14px 10px;
+    }
+    &.home-style-compact .hero-dl { padding: 8px 12px; }
+    &.home-style-spotlight .hero-dl { padding: 12px max(14px, calc(50% - 340px)) 12px; }
+    /* No runway to fade over. */
+    & .home-hero-bar { padding: 10px 14px; }
+    &.home-style-compact .home-hero-bar { padding: 0 14px; }
+    /* 20px at the foot keeps the pinned gear level with PLAY (style.css). */
+    &.home-style-spotlight .home-hero-bar { padding: 20px; }
+    & .home-hero-bar .hero-note { color: var(--muted); }
+    /* The Steam-style UPDATE readout's grey text was picked for the black
+       scrim. */
+    & .home-hero-bar .steam-update-title { color: var(--text); }
+    & .home-hero-bar .steam-update-sub { color: var(--muted); }
+    & .home-hero-bar .steam-update-bar { background: var(--line-strong); }
+    & .hero-dl-phase { font-size: 13px; font-weight: bold; letter-spacing: 0; }
+    & .hero-dl-pct { font-size: 18px; font-weight: bold; letter-spacing: 0; line-height: 1; color: var(--accent-text); }
+    & .hero-dl-steps { font-size: 10px; font-weight: bold; letter-spacing: 0.3px; }
+    & .hero-dl-step { color: var(--muted); opacity: 0.7; }
+    & .hero-dl-step.done { color: var(--muted); opacity: 1; }
+    & .hero-dl-step.active { color: var(--text); opacity: 1; }
+    & .hero-dl-step + .hero-dl-step::before { border-color: var(--muted); }
+    & .hero-dl-stat-label { font-size: 9px; font-weight: bold; letter-spacing: 0.3px; color: var(--muted); }
+    & .hero-dl-stat-val { font-size: 12px; font-weight: bold; color: var(--panel-fg); }
+    & .hero-dl-track {
+      height: var(--bar-h);
+      padding: var(--bar-pad);
+      background: var(--bar-bg);
+      border: var(--bar-border);
+      border-radius: var(--bar-radius);
+      box-shadow: var(--bar-shadow);
+    }
+    & .hero-dl-fill {
+      background: var(--bar-fill);
+      background-size: var(--bar-fill-size);
+      border-radius: var(--bar-fill-radius);
+      box-shadow: var(--bar-fill-shadow);
+      transition: var(--bar-trans, none);
+    }
+    & .hero-dl-fill::after { display: none; }
+    /* The block-drawn bars: a Windows-style marquee for an unknown size, a
+       run of whole blocks stepping across inside the track rather than a
+       slide that cuts blocks in half. applyIndeterminateBar() in app.js adds
+       .segmented and gives the track's width in whole blocks. */
+    & .hero-dl-track > .hero-dl-fill.indeterminate.segmented {
+      --marquee: 80px;
+      width: 100% !important;
+      background-size: var(--marquee) 100%;
+      background-repeat: no-repeat;
+      animation: heroDlMarquee calc(var(--bar-steps, 80) * 35ms) steps(var(--bar-steps, 80)) infinite;
+    }
+    & .hero-dl-btn {
+      height: auto; min-height: 26px;
+      padding: var(--btn-pad);
+      font-family: var(--btn-font);
+      font-size: var(--btn-size);
+      font-weight: var(--btn-weight);
+      text-transform: var(--btn-case);
+      letter-spacing: var(--btn-ls);
+      text-shadow: var(--btn-tshadow);
+      color: var(--btn-fg);
+      background: var(--btn-bg);
+      border: var(--btn-border);
+      border-radius: var(--btn-radius);
+      box-shadow: var(--btn-shadow);
+    }
+    & .hero-dl-btn:hover {
+      color: var(--btn-hover-fg);
+      background: var(--btn-hover-bg);
+      border: var(--btn-hover-border);
+      box-shadow: var(--btn-hover-shadow);
+    }
+    & .hero-dl-btn:is(:active, .is-pressed) {
+      color: var(--btn-active-fg);
+      background: var(--btn-active-bg);
+      border: var(--btn-active-border);
+      box-shadow: var(--btn-active-shadow);
+      transform: var(--btn-press);
+    }
+    & .hero-dl-icon { width: 10px; height: 10px; }
+    /* Icon-only where style.css drops the labels. */
+    &.home-style-compact .hero-dl-btn { width: auto; min-width: 28px; padding: 0 8px; justify-content: center; }
+    @media (max-width: 1000px) {
+      & .hero-dl-btn { width: auto; min-width: 28px; padding: 0 8px; justify-content: center; }
+    }
   }
-  & .dlp-bar-wrap {
-    height: var(--bar-h);
-    padding: var(--bar-pad);
-    background: var(--bar-bg);
-    border: var(--bar-border);
-    border-radius: var(--bar-radius);
-    box-shadow: var(--bar-shadow);
-  }
-  & .dlp-bar-fill {
-    background: var(--bar-fill);
-    background-size: var(--bar-fill-size);
-    border-radius: var(--bar-fill-radius);
-    box-shadow: var(--bar-fill-shadow);
-    transition: var(--bar-trans, none);
-  }
-  & .dlp-step,
-  & .dlp-stat {
-    background: var(--tile-bg);
-    border: var(--tile-border);
-    border-radius: var(--tile-radius);
-    box-shadow: var(--tile-shadow);
-  }
-  & .dlp-step {
-    font-family: var(--font-ui);
-    font-size: 10px;
-    letter-spacing: 0.3px;
-    color: var(--muted);
-    opacity: 1;
-  }
-  & .dlp-step.active { color: var(--accent-text); }
-  & .dlp-step.done { color: var(--text); }
-  & .dlp-step-idx {
-    color: var(--muted);
-    background: var(--surface);
-    border: 1px solid var(--line-strong);
-  }
-  & .dlp-step.active .dlp-step-idx { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
-  & .dlp-step.done .dlp-step-idx { color: var(--on-ok); background: var(--ok); border-color: var(--ok); }
-  & .dlp-stat-label { font-family: var(--font-ui); font-size: 9px; color: var(--muted); }
-  & .dlp-stat-val { font-family: var(--font-ui); font-size: 12px; color: var(--text); }
 
   /* ── Status strip ─────────────────────────────────────────────────── */
   /* The panel is painted with the others in 01-components.css; here the

@@ -194,7 +194,6 @@ body:is(.theme-win95, .theme-win98) {
   --chip-active-bg: #000080;
   --chip-active-fg: #ffffff;
 
-  --seg-label: #ffffff;
   --seg-press-bg: #c0c0c0;
   --seg-press-fg: #000000;
   --seg-press-shadow: var(--pressed);
@@ -327,8 +326,6 @@ body:is(.theme-win95, .theme-win98) {
     box-shadow: var(--pressed);
   }
 
-  & .dlp-dot { animation: sk-blink 1s steps(1, end) infinite; }
-  & .dlp-step-idx { border-radius: 0; }
 
   /* Dialogs: the frame's bevel shows around the caption. */
   & .modal-box { padding: 3px; }

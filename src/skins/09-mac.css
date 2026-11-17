@@ -244,7 +244,6 @@ body.theme-macosclassic {
   --seg-active-bg: #777777;
   --seg-active-fg: #ffffff;
   --seg-active-shadow: inset 1px 1px #444444;
-  --seg-label: #dddddd;
   --seg-press-bg: #777777;
   --seg-press-fg: #ffffff;
   --seg-press-shadow: inset 1px 1px #444444;
@@ -349,14 +348,12 @@ body.theme-macosclassic {
   & .home-hero-bar :is(.btn-play, .btn-download-big) { margin-left: 4px; }
   & .toast::before { display: none; }
   & .toast { padding: 8px 12px; }
-  & .dlp-step-idx { border-radius: 0; }
-  & .dlp-dot { border-radius: 0; }
 
   /* A download of unknown size (Stella's server sends none) is the barber
      pole Mac OS draws for one: lavender stripes running along the whole bar,
      rather than the shared fill sliding over the bar's frame. The stripes
      move with Aqua's keyframes, which shift the second layer one tile. */
-  & .dlp-bar-wrap > .dlp-bar-fill.indeterminate {
+  & .hero-dl-track > .hero-dl-fill.indeterminate {
     width: 100% !important;
     background:
       linear-gradient(180deg, rgba(255, 255, 255, 0.35) 0%, rgba(255, 255, 255, 0) 50%, rgba(0, 0, 0, 0.12) 100%),
@@ -577,7 +574,6 @@ body.theme-macosaqua {
   --seg-divider: 1px solid #8e8e8e;
   --seg-active-bg: var(--gel-press);
   --seg-active-fg: #000000;
-  --seg-label: #e8e8e8;
   --seg-press-bg: linear-gradient(180deg, #8fb8ea 0%, #4d8ade 45%, #2a6fcf 50%, #5f9fe8 100%);
   --seg-press-fg: #000000;
 
@@ -677,16 +673,15 @@ body.theme-macosaqua {
 
   & .native-search-bar .cfg-input { border-radius: 999px; padding: 4px 12px; }
   & .modal-btn.modal-btn-primary { animation: sk-aqua-throb 1.6s ease-in-out infinite; }
-  & .dlp-bar-fill { animation: sk-aqua-stripes 0.8s linear infinite; }
+  & .hero-dl-fill { animation: sk-aqua-stripes 0.8s linear infinite; }
   /* Unknown size: the stripes run along the whole bar, as Aqua's
      indeterminate bar does. Without this the shared rule made it a third of
      a bar, and this skin's stripe animation (which outranks the shared slide)
      left that third standing still at the left. */
-  & .dlp-bar-wrap > .dlp-bar-fill.indeterminate { width: 100% !important; }
+  & .hero-dl-track > .hero-dl-fill.indeterminate { width: 100% !important; }
   & .home-hero-bar :is(.btn-play, .btn-download-big) { font-weight: 700; }
   & .toast::before { display: none; }
   & .toast { padding: 9px 14px; }
-  & .dlp-step-idx { border-radius: 50%; }
 
   & .settings-group > .sg-title { padding-bottom: 0; }
 }

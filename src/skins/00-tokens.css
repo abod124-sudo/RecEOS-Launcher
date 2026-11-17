@@ -412,7 +412,6 @@ body:not(.glass-enabled) {
   --seg-active-fg:     var(--on-accent);
   --seg-active-shadow: none;
   --seg-slider:  none;          /* `block` to use the gliding thumb instead */
-  --seg-label:   rgba(255, 255, 255, 0.72);
   --seg-press-bg:     transparent;
   --seg-press-fg:     var(--seg-fg);
   --seg-press-shadow: none;
