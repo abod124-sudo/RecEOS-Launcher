@@ -250,6 +250,59 @@ pub fn mod_installed(client_dir: &str) -> bool {
     Path::new(client_dir).join(MOD_DLL).is_file()
 }
 
+/// Whether `path` (as the base zip names it, `/`-separated) is part of the
+/// BepInEx loader: Doorstop's `version.dll` and its config, the .NET runtime
+/// and BepInEx itself. Without all of them `RecRoom.exe` starts as plain
+/// Rec Room, mod or no mod.
+pub fn is_loader_file(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower == "version.dll"
+        || lower == "doorstop_config.ini"
+        || lower.starts_with("dotnet/")
+        || lower.starts_with("bepinex/core/")
+        || lower.starts_with("bepinex/interop/")
+        || lower.starts_with("bepinex/unity-libs/")
+}
+
+/// The loader files without which the game would start unmodded, checked on
+/// every launch: the first thing missing (or Doorstop switched off), if any.
+/// The full set, against the install's file list, is checked before Play;
+/// this is the backstop for every other way a launch can start.
+pub fn loader_problem(client_dir: &str) -> Option<String> {
+    let dir = Path::new(client_dir);
+    for f in ["version.dll", "doorstop_config.ini", "dotnet/coreclr.dll", "BepInEx/core/BepInEx.Unity.IL2CPP.dll"] {
+        if !dir.join(f).is_file() {
+            return Some(format!("{f} is missing"));
+        }
+    }
+    let ini = std::fs::read_to_string(dir.join("doorstop_config.ini")).unwrap_or_default();
+    if !doorstop_enabled(&ini) {
+        return Some("Doorstop is switched off in doorstop_config.ini".into());
+    }
+    None
+}
+
+/// `enabled = true` under `[General]` (Doorstop's default when the key is absent).
+fn doorstop_enabled(ini: &str) -> bool {
+    let mut section = String::new();
+    for line in ini.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            section = line.trim_matches(['[', ']']).trim().to_ascii_lowercase();
+            continue;
+        }
+        if section != "general" {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=') {
+            if key.trim().eq_ignore_ascii_case("enabled") {
+                return value.trim().eq_ignore_ascii_case("true");
+            }
+        }
+    }
+    true
+}
+
 /// Whether the installed mod needs files from the current release.
 ///
 /// Returns `{ success, installed, updateAvailable, required, latestBuild,
@@ -517,6 +570,36 @@ mod tests {
     #[test]
     fn no_release_is_not_an_error() {
         assert!(parse_release(&json!({ "platform": "pc", "latest": 0, "minimum": 0 })).unwrap().is_none());
+    }
+
+    #[test]
+    fn the_loader_is_whole_only_with_doorstop_and_bepinex() {
+        let dir = std::env::temp_dir().join(format!("receos-loader-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let files = ["version.dll", "doorstop_config.ini", "dotnet/coreclr.dll", "BepInEx/core/BepInEx.Unity.IL2CPP.dll"];
+        for f in files {
+            let p = dir.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, if f.ends_with(".ini") { "[General]\nenabled = true\n" } else { "x" }).unwrap();
+        }
+        let d = dir.to_string_lossy().to_string();
+        assert_eq!(loader_problem(&d), None);
+
+        std::fs::write(dir.join("doorstop_config.ini"), "[General]\r\nenabled = false\r\n[Il2Cpp]\r\nenabled = true\r\n").unwrap();
+        assert!(loader_problem(&d).unwrap().contains("switched off"));
+        std::fs::write(dir.join("doorstop_config.ini"), "[General]\ntarget_assembly = x\n").unwrap();
+        assert_eq!(loader_problem(&d), None, "enabled by default");
+
+        std::fs::remove_file(dir.join("version.dll")).unwrap();
+        assert!(loader_problem(&d).unwrap().contains("version.dll"));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        for p in ["version.dll", "Doorstop_Config.ini", "dotnet/coreclr.dll", "BepInEx/interop/Assembly-CSharp.dll", "BepInEx/unity-libs/UnityEngine.dll"] {
+            assert!(is_loader_file(p), "{p}");
+        }
+        for p in ["RecRoom.exe", "BepInEx/plugins/RecEOS.dll", "BepInEx/config/BepInEx.cfg", "UserLibs/EOSSDK-Win64-Shipping.dll"] {
+            assert!(!is_loader_file(p), "{p}");
+        }
     }
 
     #[test]

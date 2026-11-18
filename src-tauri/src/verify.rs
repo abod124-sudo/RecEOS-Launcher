@@ -523,6 +523,8 @@ impl<R: Read> Read for Counted<R> {
 /// known up front — where the last damaged file ends — so even a server that
 /// sends no length gets a percentage and an ETA.
 struct StreamMeter {
+    /// Where in the zip the body starts; bytes are counted from here.
+    start: u64,
     end: u64,
     started: Instant,
     last_emit: Instant,
@@ -534,15 +536,16 @@ impl StreamMeter {
             return None;
         }
         self.last_emit = Instant::now();
+        let (pos, end) = (pos.saturating_sub(self.start), self.end.saturating_sub(self.start));
         let elapsed = self.started.elapsed().as_secs_f64().max(0.001);
         let speed = pos as f64 / elapsed;
-        let pct = if self.end > 0 { (pos as f64 / self.end as f64 * 100.0).min(99.0) as i64 } else { -1 };
-        let eta = if speed > 0.0 && elapsed >= 1.0 { (self.end.saturating_sub(pos) as f64 / speed) as i64 } else { -1 };
+        let pct = if end > 0 { (pos as f64 / end as f64 * 100.0).min(99.0) as i64 } else { -1 };
+        let eta = if speed > 0.0 && elapsed >= 1.0 { (end.saturating_sub(pos) as f64 / speed) as i64 } else { -1 };
         Some(json!({
             "phase": "download",
             "pct": pct,
             "downloaded": pos,
-            "total": self.end,
+            "total": end,
             "speed": speed as u64,
             "eta": eta,
         }))
@@ -564,6 +567,19 @@ pub fn repair_from_stream<R: Read>(
     damaged: &[FileRecord],
     progress: &mut dyn FnMut(Value),
 ) -> Result<usize, String> {
+    repair_from_stream_at(body, 0, dir, damaged, progress)
+}
+
+/// [`repair_from_stream`] for a `body` that starts `start` bytes into the
+/// zip rather than at its first byte (a range from a server). Progress counts
+/// from `start`.
+fn repair_from_stream_at<R: Read>(
+    body: R,
+    start: u64,
+    dir: &Path,
+    damaged: &[FileRecord],
+    progress: &mut dyn FnMut(Value),
+) -> Result<usize, String> {
     let mut plan = Vec::new();
     for record in damaged {
         match (record.at, safe_rel_path(&record.path)) {
@@ -573,9 +589,10 @@ pub fn repair_from_stream<R: Read>(
     }
     plan.sort_by_key(|(_, spot, _)| spot.header);
 
-    let pos = std::rc::Rc::new(std::cell::Cell::new(0u64));
+    let pos = std::rc::Rc::new(std::cell::Cell::new(start));
     let mut body = Counted { inner: body, pos: pos.clone() };
     let mut meter = StreamMeter {
+        start,
         end: stream_end(damaged),
         started: Instant::now(),
         last_emit: download::emit_now_baseline(EMIT_INTERVAL),
@@ -681,6 +698,7 @@ pub fn repair_by_scan<R: Read>(
     // inflated without reading past where it ends.
     let mut body = std::io::BufReader::with_capacity(1024 * 1024, Counted { inner: body, pos: pos.clone() });
     let mut meter = StreamMeter {
+        start: 0,
         end: size.unwrap_or(0),
         started: Instant::now(),
         last_emit: download::emit_now_baseline(EMIT_INTERVAL),
@@ -1188,6 +1206,76 @@ async fn verify_impl(app: &tauri::AppHandle, network: Network) -> Result<Value, 
     }))
 }
 
+/// The quick check Play runs for Rec EOS: is the BepInEx loader whole? Without
+/// it the game starts as plain Rec Room. Every loader file is checked for
+/// presence and size, and Doorstop's own two (tiny) by checksum too, which
+/// takes a moment, not the minutes a full Verify Files does. Damage is
+/// remembered as a check, so [`repair_client`] fetches just those files (and
+/// puts the mod back after).
+///
+/// Answers `{status}`: `ok`, `damaged` (with `damaged: [{path, problem}]`),
+/// `no-manifest` with `problem` when an install without a file list is
+/// missing loader files (or `ok` when it isn't), or `error`.
+#[tauri::command]
+pub async fn receos_check_loader(app: tauri::AppHandle) -> Value {
+    let network = Network::RecEos;
+    let client_dir = match installed_client_dir(&app, network) {
+        Ok(dir) => dir,
+        Err(e) => return json!({ "status": "error", "error": e }),
+    };
+    let dir = client_dir.clone();
+    let checked = tokio::task::spawn_blocking(move || -> Option<Vec<(FileRecord, Problem)>> {
+        let files = read_files_manifest(Path::new(&dir))?;
+        let mut buf = vec![0u8; 64 * 1024];
+        let mut damaged = Vec::new();
+        for record in files.iter().filter(|f| crate::receos::is_loader_file(&f.path)) {
+            let Some(rel) = safe_rel_path(&record.path) else { continue };
+            let path = Path::new(&dir).join(rel);
+            let lower = record.path.to_ascii_lowercase();
+            let problem = if lower == "version.dll" || lower == "doorstop_config.ini" {
+                check_file(&path, record, &mut buf, &mut |_| {}).unwrap_or(None)
+            } else {
+                match fs::metadata(&path) {
+                    Ok(meta) if meta.is_file() && meta.len() == record.size => None,
+                    Ok(meta) if meta.is_file() => Some(Problem::Size),
+                    _ => Some(Problem::Missing),
+                }
+            };
+            if let Some(problem) = problem {
+                damaged.push((record.clone(), problem));
+            }
+        }
+        Some(damaged)
+    })
+    .await
+    .unwrap_or(None);
+
+    let Some(damaged) = checked else {
+        return match crate::receos::loader_problem(&client_dir) {
+            Some(problem) => json!({ "status": "no-manifest", "problem": problem }),
+            None => json!({ "status": "ok", "checked": 0 }),
+        };
+    };
+    if damaged.is_empty() {
+        return json!({ "status": "ok" });
+    }
+    let list: Vec<Value> = damaged
+        .iter()
+        .map(|(record, problem)| json!({ "path": record.path, "problem": problem }))
+        .collect();
+    crate::applog::backend(
+        "warn",
+        "Rec EOS",
+        format!("{} loader file(s) missing or damaged, first {}.", list.len(), damaged[0].0.path),
+    );
+    *LAST_CHECK.lock().unwrap_or_else(|e| e.into_inner()) = Some(LastCheck {
+        network,
+        client_dir,
+        damaged: damaged.into_iter().map(|(record, _)| record).collect(),
+    });
+    json!({ "status": "damaged", "damaged": list })
+}
+
 /// Repair the files the last check of `network` found damaged.
 ///
 /// Without `full`, only those files are fetched, when the server answers byte
@@ -1317,16 +1405,25 @@ async fn repair_by_ranges(
         let dir = client_dir.to_string();
         tokio::task::spawn_blocking(move || {
             let total = remote.total;
-            let reader = RangeReader::new(total, |start, len| {
+            let mut fetch = |start, len| {
                 runtime
                     .block_on(fetch_range(&http, &remote, start, len))
                     .map_err(std::io::Error::other)
-            });
+            };
+            let mut progress = |progress| {
+                let _ = app.emit("download-progress", progress);
+            };
+            // Where each file is in the zip was recorded at install: fetch
+            // just those bytes. Opening the zip to find them reads its whole
+            // directory, which for Rec EOS's 5,000 files in 3 GB was over a
+            // thousand requests and four minutes before the first byte.
+            if streamable(&damaged) {
+                return repair_from_spots(&mut fetch, total, Path::new(&dir), &damaged, &mut progress);
+            }
+            let reader = RangeReader::new(total, fetch);
             let mut archive = zip::ZipArchive::new(reader)
                 .map_err(|e| format!("Couldn't read the client zip on the server: {}", e))?;
-            repair_from_archive(&mut archive, Path::new(&dir), &damaged, &mut |progress| {
-                let _ = app.emit("download-progress", progress);
-            })
+            repair_from_archive(&mut archive, Path::new(&dir), &damaged, &mut progress)
         })
         .await
         .map_err(|e| format!("Repair task failed: {}", e))?
@@ -1335,6 +1432,33 @@ async fn repair_by_ranges(
     let repaired = repaired.map_err(|e| if download::cancel_requested() { download::CANCELLED.to_string() } else { e })?;
     let _ = app.emit("download-progress", json!({ "phase": "done", "pct": 100 }));
     Ok(Ranged::Done(json!({ "success": true, "repaired": repaired })))
+}
+
+/// Repair `damaged` (every one with its place in the zip recorded) by reading
+/// each from its local header to the end of its data through `fetch`, a zip
+/// of `total` bytes on a server that answers ranges. Each file's header is
+/// checked against the list as [`repair_from_stream`] does, so a rebuilt zip
+/// is caught rather than written from.
+fn repair_from_spots<F: FnMut(u64, u64) -> std::io::Result<Vec<u8>>>(
+    fetch: &mut F,
+    total: u64,
+    dir: &Path,
+    damaged: &[FileRecord],
+    progress: &mut dyn FnMut(Value),
+) -> Result<usize, String> {
+    let mut plan: Vec<&FileRecord> = damaged.iter().collect();
+    plan.sort_by_key(|r| r.at.map(|s| s.header).unwrap_or(0));
+    let mut repaired = 0;
+    for record in plan {
+        let Some(spot) = record.at else { return Err("These files can't be repaired from a stream.".into()) };
+        if spot.data + spot.csize > total {
+            return Err(DIFFERENT.into());
+        }
+        let mut reader = RangeReader::new(spot.data + spot.csize, &mut *fetch);
+        reader.seek(SeekFrom::Start(spot.header)).map_err(|e| read_error(&record.path, e))?;
+        repaired += repair_from_stream_at(reader, spot.header, dir, std::slice::from_ref(record), progress)?;
+    }
+    Ok(repaired)
 }
 
 /// The answer for a server that sends only the whole zip: how big the client
@@ -1600,6 +1724,47 @@ mod tests {
         assert!(check_files(&dir, &damaged, &mut |_| {}).unwrap().is_empty());
         eprintln!("{} files ({} MB read) repaired in {:?}", repaired, stream_end(&damaged) / 1_048_576, started.elapsed());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two loader files by ranges from R2, one of them the zip's last file:
+    /// fetched from their recorded places, without opening the zip.
+    /// `RECEOS_CLIENT_DIR=<installed client> cargo test --lib -- --ignored receos_loader_by_ranges --nocapture`
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "reads part of the Rec EOS client from R2"]
+    async fn receos_loader_by_ranges() {
+        let url = crate::receos::CLIENT_URL.to_string();
+        let http = range_client().unwrap();
+        let remote = probe_ranges(&http, &url, crate::receos::USER_AGENT).await.unwrap().expect("ranges");
+        let installed = std::env::var("RECEOS_CLIENT_DIR").expect("set RECEOS_CLIENT_DIR");
+        let damaged: Vec<FileRecord> = read_files_manifest(Path::new(&installed))
+            .unwrap()
+            .into_iter()
+            .filter(|f| f.path == "version.dll" || f.path == "dotnet/System.Text.Json.dll")
+            .collect();
+        let dir = temp_dir("receos-ranges");
+        let runtime = tokio::runtime::Handle::current();
+        let started = std::time::Instant::now();
+        let (requests, bytes) = tokio::task::spawn_blocking({
+            let dir = dir.clone();
+            move || {
+                let (mut requests, mut bytes) = (0u32, 0u64);
+                let mut fetch = |start, len| {
+                    requests += 1;
+                    bytes += len;
+                    runtime.block_on(fetch_range(&http, &remote, start, len)).map_err(std::io::Error::other)
+                };
+                assert_eq!(repair_from_spots(&mut fetch, remote.total, &dir, &damaged, &mut |_| {}).unwrap(), 2);
+                assert!(check_files(&dir, &damaged, &mut |_| {}).unwrap().is_empty());
+                (requests, bytes)
+            }
+        })
+        .await
+        .unwrap();
+        // 2026-11-18: 3 requests, 787 KB, 1.2 s (opening the zip first was
+        // 1,226 requests, 314 MB, 257 s).
+        eprintln!("{requests} requests, {} KB, {:?}", bytes / 1024, started.elapsed());
+        assert!(requests < 10, "{requests} requests");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[tokio::test(flavor = "multi_thread")]

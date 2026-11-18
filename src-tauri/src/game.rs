@@ -1151,6 +1151,15 @@ fn launch_game_impl(
     if network == config::Network::RecEos && !crate::receos::mod_installed(&client_dir) {
         return Err("Rec EOS isn't installed in this client yet. Press UPDATE on Home.".into());
     }
+    // Nor without the loader that puts the mod in: started anyway, it is plain
+    // Rec Room (which Steam may even swap for its own copy).
+    if network == config::Network::RecEos {
+        if let Some(problem) = crate::receos::loader_problem(&client_dir) {
+            return Err(format!(
+                "Rec EOS's loader is damaged ({problem}), so the game would start without Rec EOS. Use Verify Files (Manage) to repair it."
+            ));
+        }
+    }
 
     let exe = Path::new(&exe_path);
     let work_dir = exe
@@ -1233,6 +1242,14 @@ fn launch_game_impl(
             cmd.arg(target);
         }
         cmd.current_dir(&work_dir);
+        // Doorstop marks a process it has loaded into with DOORSTOP_* variables
+        // and skips any process that already has them. Inherited (a launcher
+        // started from inside the game, say), the game would start unmodded.
+        for (name, _) in std::env::vars_os() {
+            if name.to_string_lossy().to_ascii_uppercase().starts_with("DOORSTOP_") {
+                cmd.env_remove(name);
+            }
+        }
         #[cfg(target_os = "windows")]
         cmd.creation_flags(0x00000008); // DETACHED_PROCESS
         cmd.spawn()

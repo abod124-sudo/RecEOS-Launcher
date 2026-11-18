@@ -485,6 +485,7 @@ function withoutBackdrop(cfg) {
     // download when `full` (see verify.rs).
     verifyClient: () => invoke('verify_client', { network: activeNetwork }),
     repairClient: (full = false) => invoke('repair_client', { network: activeNetwork, full }),
+    receosCheckLoader: () => invoke('receos_check_loader'),
     // These take an explicit network: Settings lists every network's install
     // folder at once, so it has to address the inactive ones too.
     openClientFolder: (network = activeNetwork) => invoke('open_client_folder', { network }),
@@ -4602,6 +4603,7 @@ const RECEOS_PLAY_CHECK_MS = 8000;
 /// False when the launch should stop.
 async function receosUpdateBeforePlay() {
   if (activeNetwork !== 'receos' || !isInstalled) return true;
+  if (!(await receosLoaderBeforePlay())) return false;
   const label = $('playText');
   if (label && !isGameRunning) label.textContent = 'CHECKING…';
   const seq = ++stellaPatchCheckSeq;
@@ -4641,6 +4643,35 @@ async function receosUpdateBeforePlay() {
     ? `Rec EOS build ${status.latestBuild} is out${status.installedBuild ? ` (you have ${status.installedBuild})` : ''}. Installing it before the game starts...`
     : 'Adding Rec EOS to the game before it starts...', 'info', 'install');
   return runStellaPatchUpdate({ beforePlay: true });
+}
+
+/// Rec EOS, before every launch: is the BepInEx loader whole? Without it
+/// RecRoom.exe starts as plain Rec Room, mod or no mod, which players saw
+/// after updates and could only fix by reinstalling. Missing or damaged
+/// loader files are fetched again from the base client (just those files,
+/// then the mod is put back), and only then does the game start.
+/// False when the launch should stop.
+async function receosLoaderBeforePlay() {
+  let check;
+  try {
+    check = await window.radium?.receosCheckLoader();
+  } catch (e) {
+    // The launch itself refuses a broken loader; don't block on the check.
+    addLog(`Couldn't check Rec EOS's loader: ${e}`, 'warn', 'install');
+    return true;
+  }
+  if (check?.status === 'no-manifest') {
+    addLog(`Rec EOS's loader is damaged (${check.problem}), and this install has no file list to repair it from.`, 'error', 'install');
+    toast("Rec EOS's loader is damaged, so the game would start without Rec EOS. Reinstall it from Manage.", 'error', 7000);
+    return false;
+  }
+  if (check?.status !== 'damaged') return true;
+  const damaged = check.damaged || [];
+  addLog(`${plural(damaged.length, 'Rec EOS loader file')} missing or damaged; repairing before the game starts:`, 'warn', 'install');
+  for (const f of damaged.slice(0, 10)) addLog(`  ${f.path}: ${VERIFY_PROBLEMS[f.problem] || f.problem}`, 'warn', 'install');
+  if (damaged.length > 10) addLog(`  ...and ${damaged.length - 10} more.`, 'warn', 'install');
+  beginClientTask('repair', ['Check', 'Repair', 'Done']);
+  return runRepair(damaged.length);
 }
 
 function onPatchProgress(p) {
@@ -4915,7 +4946,7 @@ async function runRepair(count) {
     });
     if (!go) {
       addLog('Repair skipped. Run Verify Files again to repair.', 'info', 'install');
-      return;
+      return false;
     }
     beginClientTask('repair', ['Download', 'Repair', 'Done']);
     addLog(r.needed
@@ -4939,6 +4970,7 @@ async function runRepair(count) {
     toast(`Repair failed: ${err}`, 'error', 6000);
   }
   await endClientTask();
+  return !!r?.success;
 }
 
 $('btnVerifyFiles')?.addEventListener('click', () => {
@@ -5844,7 +5876,15 @@ async function checkSteamAndLaunch() {
   }
 }
 
+/// After the antivirus step: Rec EOS's loader check and update, then the rest.
+/// They come after it so a loader file put back isn't one an antivirus that
+/// just took it takes again, before the folder is excluded.
 async function proceedAfterAvCheck() {
+  if (!(await receosUpdateBeforePlay())) {
+    isGameLaunching = false;
+    syncTray();
+    return;
+  }
   await checkSacAndLaunch();
 }
 
@@ -5853,12 +5893,15 @@ async function proceedAfterAvCheck() {
 // game's patched files aren't quarantined. Flows into the Smart App Control
 // check, then the Steam check, then the actual launch.
 async function checkAvAndLaunch() {
-  if (!(await receosUpdateBeforePlay())) {
-    isGameLaunching = false;
-    syncTray();
+  if (platformCapabilities.linux) {
+    if (!(await receosUpdateBeforePlay())) {
+      isGameLaunching = false;
+      syncTray();
+      return;
+    }
+    await checkSteamAndLaunch();
     return;
   }
-  if (platformCapabilities.linux) { await checkSteamAndLaunch(); return; }
   // Vanilla's game lives in Vanilla's launcher's folder, which this exclusion
   // (Rec EOS's own client folders) doesn't cover — nothing to offer there.
   if (activeNetwork === 'vanilla') {

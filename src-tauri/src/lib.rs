@@ -164,6 +164,7 @@ pub fn run() {
             download::resolve_client_dir,
             verify::verify_client,
             verify::repair_client,
+            verify::receos_check_loader,
             // Game
             game::launch_game,
             game::autoplay_vanilla,
