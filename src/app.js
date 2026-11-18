@@ -486,6 +486,8 @@ function withoutBackdrop(cfg) {
     verifyClient: () => invoke('verify_client', { network: activeNetwork }),
     repairClient: (full = false) => invoke('repair_client', { network: activeNetwork, full }),
     receosCheckLoader: () => invoke('receos_check_loader'),
+    receosSetAsideStrays: (resetBepinex) => invoke('receos_set_aside_strays', { resetBepinex }),
+    receosBepinexStarted: (sinceMs) => invoke('receos_bepinex_started', { sinceMs }),
     // These take an explicit network: Settings lists every network's install
     // folder at once, so it has to address the inactive ones too.
     openClientFolder: (network = activeNetwork) => invoke('open_client_folder', { network }),
@@ -4645,6 +4647,46 @@ async function receosUpdateBeforePlay() {
   return runStellaPatchUpdate({ beforePlay: true });
 }
 
+/// Set when a Rec EOS launch ran without BepInEx: the next PLAY resets
+/// BepInEx's cache and settings (with any stray loader files) first.
+let receosResetNeeded = false;
+let receosWatchSeq = 0;
+
+/// After a Rec EOS launch: did BepInEx start? It writes its log the moment it
+/// does, so a game that has run a while without one is plain Rec Room (with
+/// Steam's Rec Room license, it plays as the real game). Checked until it
+/// shows up, the game closes, or 40 s pass.
+async function watchReceosLoader(launchedAt) {
+  const seq = ++receosWatchSeq;
+  const check = async () => {
+    try { return await window.radium?.receosBepinexStarted(launchedAt); } catch { return null; }
+  };
+  for (;;) {
+    await sleep(3000);
+    if (seq !== receosWatchSeq) return;
+    const s = await check();
+    if (!s || s.started) return;
+    const secs = (Date.now() - launchedAt) / 1000;
+    if (!s.running) {
+      // Closed before BepInEx ever wrote a line, after long enough that it
+      // would have: the same case, found as the game went.
+      if (secs >= 8) flagReceosLoader(false);
+      return;
+    }
+    if (secs >= 40) { flagReceosLoader(true); return; }
+  }
+}
+
+function flagReceosLoader(stillRunning) {
+  if (receosResetNeeded) return;
+  receosResetNeeded = true;
+  addLog("Rec EOS didn't load into the game: its loader (BepInEx) never started, so the game ran as plain Rec Room. "
+    + 'The next PLAY resets the loader first.', 'error', 'game');
+  toast(stillRunning
+    ? "Rec EOS didn't load into the game. Close it and press PLAY again: the launcher fixes the loader first."
+    : "Rec EOS didn't load into the game. Press PLAY again: the launcher fixes the loader first.", 'error', 9000);
+}
+
 /// Rec EOS, before every launch: is the BepInEx loader whole? Without it
 /// RecRoom.exe starts as plain Rec Room, mod or no mod, which players saw
 /// after updates and could only fix by reinstalling. Missing or damaged
@@ -4664,6 +4706,28 @@ async function receosLoaderBeforePlay() {
     addLog(`Rec EOS's loader is damaged (${check.problem}), and this install has no file list to repair it from.`, 'error', 'install');
     toast("Rec EOS's loader is damaged, so the game would start without Rec EOS. Reinstall it from Manage.", 'error', 7000);
     return false;
+  }
+  // Files on top of the install that keep BepInEx from starting (an older
+  // Doorstop, extra runtime files), and after a launch it didn't start in,
+  // its cache and settings: moved aside, as a reinstall would have cleared them.
+  const strays = check?.stray || [];
+  if (strays.length || receosResetNeeded) {
+    let moved;
+    try {
+      moved = await window.radium?.receosSetAsideStrays(receosResetNeeded);
+    } catch (e) {
+      moved = { success: false, error: String(e) };
+    }
+    if (moved?.success) {
+      receosResetNeeded = false;
+      if (moved.moved?.length) {
+        addLog(`Moved ${plural(moved.moved.length, 'file')} out of Rec EOS's loader's way (kept in UserData\\RecEOS-set-aside): ${moved.moved.join(', ')}`, 'warn', 'install');
+      }
+    } else {
+      addLog(`Couldn't reset Rec EOS's loader: ${moved?.error || 'Unknown error'}`, 'error', 'install');
+      toast(`Couldn't reset Rec EOS's loader: ${moved?.error || 'Unknown error'}`, 'error', 6000);
+      return false;
+    }
   }
   if (check?.status !== 'damaged') return true;
   const damaged = check.damaged || [];
@@ -5791,6 +5855,7 @@ async function doLaunch() {
   toast(join ? `Launching ${networkInfo().label} to join ${join.name}...` : `Launching ${networkInfo().label}...`, 'info', 2000);
 
   let result = null;
+  const launchedAt = Date.now();
   try {
     // Only what launch_game reads (the shim adds `network`). Spreading the
     // whole config also sent the glass backdrop — up to 1.4 MB — on every PLAY.
@@ -5828,6 +5893,7 @@ async function doLaunch() {
     if (result.resolutionFixed) addLog("The game's saved window size was tiny, so it was reset to your screen's size.", 'info', 'game');
     addLog(`Game running${pidPart} — mode: ${playMode}`, 'ok', 'game');
     toast(`${networkInfo().label} launched in ${playMode.toUpperCase()} mode!`, 'ok');
+    if (activeNetwork === 'receos' && !platformCapabilities.linux) watchReceosLoader(launchedAt);
     // launch_game has already hidden the window (tray mode) or quit; this
     // only logs it. It also used to close the window again a second later,
     // which in tray mode was a second hide, and a second "launcher hidden"

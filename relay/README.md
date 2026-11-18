@@ -3,7 +3,7 @@
 A Cloudflare Worker that passes bug reports from the launcher to Discord.
 The Discord webhook address is stored only as a Worker secret, so it is never
 inside the app. The Worker rebuilds each report from allowed fields, accepts
-only `logs.txt` and `previous-session.txt` attachments, allows 2 reports per IP
+only `logs.txt`, `previous-session.txt` and `game-log.txt` attachments, allows 2 reports per IP
 address per minute, and adds the `@everyone` ping itself.
 
 ## Deploy
@@ -16,9 +16,11 @@ npx wrangler deploy
 npx wrangler secret put DISCORD_WEBHOOK
 ```
 
-Paste the new webhook address when asked. `deploy` prints the Worker's
-address; the launcher's `REPORT_URL` in `src-tauri/src/bugreport.rs` must be
-that address followed by `/report`.
+Paste the new webhook address when asked. The Worker answers on
+`https://bugreports.rec-eos.com` (a custom domain on the rec-eos.com zone,
+set in `wrangler.toml`), which is the launcher's `REPORT_URL` in
+`src-tauri/src/bugreport.rs` followed by `/report`. Its workers.dev address
+stays on for launchers from before the move (v4.0.0 and older).
 
 ## If the webhook leaks again
 

@@ -17,7 +17,8 @@ const MIN_DESCRIPTION: usize = 10;
 const MAX_DESCRIPTION: usize = 1500;
 
 /// Where reports are sent: the relay Worker in relay/, never Discord itself.
-const REPORT_URL: &str = "https://receos-bug-relay.receos-api.workers.dev/report";
+/// (The relay's workers.dev address stays on for older launchers.)
+const REPORT_URL: &str = "https://bugreports.rec-eos.com/report";
 
 /// Seconds between two reports.
 const COOLDOWN_SECS: u64 = 60;
@@ -390,6 +391,174 @@ impl Facts {
     }
 }
 
+// ─── The game's own log ─────────────────────────────────────────────────────
+
+/// The most of a BepInEx log a report carries: its newest part. The relay
+/// takes 3 MB a file; a normal session's log is ~40 KB.
+const MAX_GAME_LOG: usize = 1024 * 1024;
+
+/// Rec EOS's game-side log, for a report: BepInEx's own log (which the mod
+/// writes into too) and its error log, after a few lines about the loader the
+/// launcher can see from outside. Even with no log at all this says something:
+/// BepInEx never started.
+struct GameLog {
+    text: String,
+    found: bool,
+    lines: usize,
+    /// Seconds since BepInEx last wrote its log.
+    age_secs: Option<u64>,
+}
+
+fn game_log(app: &tauri::AppHandle) -> Option<GameLog> {
+    let cfg = config::current(app);
+    if cfg.network() != config::Network::RecEos {
+        return None;
+    }
+    let client_dir = config::get_client_dir_for(app, &cfg, config::Network::RecEos);
+    let dir = std::path::Path::new(&client_dir);
+    if !dir.join("RecRoom.exe").is_file() {
+        return None;
+    }
+    let bepinex = dir.join("BepInEx");
+    let read = |name: &str| -> Option<(String, Option<SystemTime>)> {
+        let path = bepinex.join(name);
+        let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        let bytes = std::fs::read(&path).ok()?;
+        Some((String::from_utf8_lossy(&bytes).into_owned(), modified))
+    };
+    // Every log BepInEx has left, newest first. When LogOutput.log is held
+    // open it writes LogOutput.log.1 (and on) instead, so the newest of them
+    // is the one about the last start.
+    let mut logs: Vec<(String, SystemTime)> = std::fs::read_dir(&bepinex)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let modified = e.metadata().and_then(|m| m.modified()).ok()?;
+            name.to_ascii_lowercase().contains(".log").then_some((name, modified))
+        })
+        .collect();
+    logs.sort_by(|a, b| b.1.cmp(&a.1));
+    let newest_output = logs
+        .iter()
+        .find(|(n, _)| n.to_ascii_lowercase().starts_with("logoutput.log"))
+        .map(|(n, _)| n.clone());
+    let log = newest_output.as_deref().and_then(|n| read(n).map(|(t, m)| (n.to_string(), t, m)));
+    let errors = read("ErrorLog.log").map(|(t, _)| t).filter(|t| !t.trim().is_empty());
+    let ago = |m: SystemTime| SystemTime::now().duration_since(m).ok().map(|d| d.as_secs());
+    let age_secs = log.as_ref().and_then(|(_, _, m)| *m).and_then(ago);
+    // Settings that can stop BepInEx without any file being missing: a
+    // section switched off in its config, Doorstop pointed elsewhere.
+    let cfg_text = read("config/BepInEx.cfg").map(|(t, _)| t);
+    let switched_off: Vec<String> = cfg_text
+        .as_deref()
+        .map(|t| {
+            let mut section = String::new();
+            let mut off = Vec::new();
+            for line in t.lines().map(str::trim) {
+                if line.starts_with('[') {
+                    section = line.to_string();
+                } else if let Some((k, v)) = line.split_once('=') {
+                    if k.trim().eq_ignore_ascii_case("enabled") && v.trim().eq_ignore_ascii_case("false") {
+                        off.push(section.clone());
+                    }
+                }
+            }
+            off
+        })
+        .unwrap_or_default();
+    let doorstop_target = std::fs::read_to_string(dir.join("doorstop_config.ini"))
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .find(|l| l.to_ascii_lowercase().starts_with("target_assembly"))
+        .map(|l| l.split_once('=').map_or("", |(_, v)| v.trim()).to_string())
+        .unwrap_or_else(|| "(not set)".into());
+    let doorstop_vars: Vec<String> = std::env::vars_os()
+        .map(|(k, _)| k.to_string_lossy().into_owned())
+        .filter(|k| k.to_ascii_uppercase().starts_with("DOORSTOP_"))
+        .collect();
+
+    let mut text = String::from("===== REC EOS GAME LOG =====\n");
+    text += &format!(
+        "Loader   : {}\n",
+        crate::receos::loader_problem(&client_dir).unwrap_or_else(|| "whole (version.dll, Doorstop enabled, .NET, BepInEx)".into())
+    );
+    text += &format!("Mod      : {}\n", if crate::receos::mod_installed(&client_dir) { "RecEOS.dll present" } else { "RecEOS.dll MISSING" });
+    text += &format!(
+        "Extras   : {}\n",
+        match crate::verify::receos_strays_in(&client_dir) {
+            None => "no file list to compare with".to_string(),
+            Some(s) if s.is_empty() => "none in the loader's places".to_string(),
+            Some(s) => format!("NOT FROM THE INSTALL: {}", s.join(", ")),
+        }
+    );
+    text += &format!(
+        "Launcher : {}\n",
+        if doorstop_vars.is_empty() {
+            "no DOORSTOP_* variables (good)".to_string()
+        } else {
+            format!("has {} — a game it starts skips BepInEx", doorstop_vars.join(", "))
+        }
+    );
+    text += &format!("Doorstop : target_assembly = {doorstop_target}\n");
+    text += &format!(
+        "Config   : {}\n",
+        match (&cfg_text, switched_off.is_empty()) {
+            (None, _) => "BepInEx.cfg not there yet (BepInEx writes it on its first start)".to_string(),
+            (Some(_), true) => "nothing switched off".to_string(),
+            (Some(_), false) => format!("Enabled = false in {}", switched_off.join(", ")),
+        }
+    );
+    text += &format!(
+        "BepInEx  : {}\n",
+        match (&log, age_secs) {
+            (None, _) => "no LogOutput.log: BepInEx has never started in this folder".to_string(),
+            (Some((name, _, _)), Some(s)) => format!("{name} last written {} ago (each start rewrites it)", describe_age(s)),
+            (Some((name, _, _)), None) => format!("{name} found"),
+        }
+    );
+    for (name, modified) in &logs {
+        let age = ago(*modified).map(describe_age).unwrap_or_else(|| "?".into());
+        text += &format!("           {name}: {age} ago\n");
+    }
+    text += "============================\n\n";
+    if let Some((name, body, _)) = &log {
+        text += &format!("--- BepInEx/{name} ---\n");
+        text += applog::tail(body, MAX_GAME_LOG);
+        text += "\n";
+    }
+    if let Some(body) = &errors {
+        text += "\n--- BepInEx/ErrorLog.log ---\n";
+        text += applog::tail(body, MAX_GAME_LOG / 4);
+        text += "\n";
+    }
+    let text = redact(&text);
+    let lines = log.as_ref().map(|(_, t, _)| t.lines().filter(|l| !l.trim().is_empty()).count()).unwrap_or(0);
+    Some(GameLog { text, found: log.is_some(), lines, age_secs })
+}
+
+/// "3 minutes", "2 hours", "5 days".
+fn describe_age(secs: u64) -> String {
+    let (n, unit) = match secs {
+        0..=59 => (secs, "second"),
+        60..=3599 => (secs / 60, "minute"),
+        3600..=86_399 => (secs / 3600, "hour"),
+        _ => (secs / 86_400, "day"),
+    };
+    format!("{n} {unit}{}", if n == 1 { "" } else { "s" })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameLogPreview {
+    found: bool,
+    lines: usize,
+    age_secs: Option<u64>,
+    preview: String,
+}
+
 // ─── Review ─────────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -408,6 +577,8 @@ pub struct Preview {
     /// This session's log, newest lines, redacted as it would be sent.
     log_preview: String,
     previous: Option<PreviousPreview>,
+    /// Rec EOS only: the game's BepInEx log, as it would be attached.
+    game_log: Option<GameLogPreview>,
     cooldown: u64,
 }
 
@@ -417,6 +588,16 @@ pub struct Preview {
 pub async fn bug_report_preview(app: tauri::AppHandle, diagnostics: Value, logs: String) -> Preview {
     let facts = Facts::gather(&app, &diagnostics).rows();
     tokio::task::spawn_blocking(move || {
+        let game_log = game_log(&app).map(|g| GameLogPreview {
+            found: g.found,
+            lines: g.lines,
+            age_secs: g.age_secs,
+            // The header, then the newest lines.
+            preview: {
+                let (head, body) = g.text.split_once("============================\n").unwrap_or(("", &g.text));
+                format!("{head}============================\n{}", last_lines(body, PREVIEW_LINES))
+            },
+        });
         let previous = applog::previous_session().map(|(text, ending)| PreviousPreview {
             lines: text.lines().filter(|l| !l.trim().is_empty()).count(),
             ending,
@@ -427,11 +608,12 @@ pub async fn bug_report_preview(app: tauri::AppHandle, diagnostics: Value, logs:
             facts,
             log_preview: redact(&last_lines(&logs, PREVIEW_LINES)),
             previous,
+            game_log,
             cooldown: cooldown_left(),
         }
     })
     .await
-    .unwrap_or_else(|_| Preview { facts: Vec::new(), log_preview: String::new(), previous: None, cooldown: 0 })
+    .unwrap_or_else(|_| Preview { facts: Vec::new(), log_preview: String::new(), previous: None, game_log: None, cooldown: 0 })
 }
 
 // ─── Send ───────────────────────────────────────────────────────────────────
@@ -447,6 +629,9 @@ pub struct Report {
     logs: String,
     attach_log: bool,
     attach_previous: bool,
+    /// Rec EOS's game log (BepInEx). Absent from older pages.
+    #[serde(default)]
+    attach_game_log: bool,
     /// The log line the report was started from ("Report this"), if any.
     linked_line: Option<String>,
     diagnostics: Value,
@@ -542,6 +727,17 @@ async fn send(app: tauri::AppHandle, report: Report) -> Result<Sent, String> {
         if let Some((text, ending)) = previous {
             attached.push(format!("previous-session.txt — {}", ending.describe()));
             files.push(("previous-session.txt", crlf(&redact(&text))));
+        }
+    }
+    if report.attach_game_log {
+        let app = app.clone();
+        if let Some(log) = tokio::task::spawn_blocking(move || game_log(&app)).await.ok().flatten() {
+            attached.push(match (log.found, log.age_secs) {
+                (false, _) => "game-log.txt — no BepInEx log in the game folder".to_string(),
+                (true, Some(s)) => format!("game-log.txt — BepInEx, {} lines, written {} ago", log.lines, describe_age(s)),
+                (true, None) => format!("game-log.txt — BepInEx, {} lines", log.lines),
+            });
+            files.push(("game-log.txt", crlf(&log.text)));
         }
     }
 

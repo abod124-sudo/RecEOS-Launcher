@@ -365,6 +365,26 @@ fn reg_dword(hive: windows_sys::Win32::System::Registry::HKEY, path: &str, value
 // ─── Tauri Commands ───────────────────────────────────────────────────────────
 
 /// Whether a game this launcher installed — either network's — is running.
+/// Rec EOS: has BepInEx started since `since_ms` (Unix ms, the launch)? It
+/// rewrites `BepInEx/LogOutput.log` (or `.log.1` and on, when that is held
+/// open) the moment it starts, so a game that has run a while with none newer
+/// than the launch is plain Rec Room. Answers `{ started, running }`.
+#[tauri::command]
+pub fn receos_bepinex_started(app: tauri::AppHandle, since_ms: u64) -> serde_json::Value {
+    let cfg = config::current(&app);
+    let client_dir = config::get_client_dir_for(&app, &cfg, config::Network::RecEos);
+    let since = std::time::UNIX_EPOCH + std::time::Duration::from_millis(since_ms);
+    let started = std::fs::read_dir(Path::new(&client_dir).join("BepInEx"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().to_ascii_lowercase().starts_with("logoutput.log"))
+        .filter_map(|e| e.metadata().and_then(|m| m.modified()).ok())
+        // A second of slack for file systems that keep coarse times.
+        .any(|m| m + std::time::Duration::from_secs(1) >= since);
+    json!({ "started": started, "running": game_running(&app) })
+}
+
 pub fn game_running(app: &tauri::AppHandle) -> bool {
     client_running(&GAME_EXES, &client_dirs(app))
 }

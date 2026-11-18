@@ -1206,6 +1206,116 @@ async fn verify_impl(app: &tauri::AppHandle, network: Network) -> Result<Value, 
     }))
 }
 
+/// Files in the loader's places that the install didn't put there: a DLL in
+/// the game's folder beside its own (`winhttp.dll`, an older Doorstop, starts
+/// first and keeps BepInEx out), or anything extra in `dotnet/`,
+/// `BepInEx/core/` or `BepInEx/patchers/`. Verify Files checks the files an
+/// install has; these are the ones it has on top, which only a reinstall
+/// cleared. `/`-separated paths, relative to `dir`.
+fn receos_strays(dir: &Path, files: &[FileRecord]) -> Vec<String> {
+    let known: std::collections::HashSet<String> = files.iter().map(|f| f.path.to_ascii_lowercase()).collect();
+    let mut strays = Vec::new();
+    if let Ok(entries) = fs::read_dir(dir) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let lower = name.to_ascii_lowercase();
+            if e.file_type().is_ok_and(|t| t.is_file()) && lower.ends_with(".dll") && !known.contains(&lower) {
+                strays.push(name);
+            }
+        }
+    }
+    for sub in ["dotnet", "BepInEx/core", "BepInEx/patchers"] {
+        let mut stack = vec![dir.join(sub)];
+        while let Some(folder) = stack.pop() {
+            let Ok(entries) = fs::read_dir(&folder) else { continue };
+            for e in entries.flatten() {
+                let path = e.path();
+                if e.file_type().is_ok_and(|t| t.is_dir()) {
+                    stack.push(path);
+                    continue;
+                }
+                let Ok(rel) = path.strip_prefix(dir) else { continue };
+                let rel = rel.to_string_lossy().replace('\\', "/");
+                if !known.contains(&rel.to_ascii_lowercase()) {
+                    strays.push(rel);
+                }
+            }
+        }
+    }
+    strays.sort();
+    strays
+}
+
+/// Rec EOS's stray loader files (see [`receos_strays`]), for the report.
+pub fn receos_strays_in(client_dir: &str) -> Option<Vec<String>> {
+    let dir = Path::new(client_dir);
+    read_files_manifest(dir).map(|files| receos_strays(dir, &files))
+}
+
+/// Move Rec EOS's stray loader files out of the loader's way, into
+/// `UserData/RecEOS-set-aside/<time>/` (kept, not deleted). Answers
+/// `{ success, moved: [paths] }` or `{ success: false, error }`.
+///
+/// With `reset_bepinex` (after a launch BepInEx didn't start in), BepInEx's
+/// cache and settings go aside too; it writes both afresh on its next start.
+/// Those are the other files Verify Files leaves alone and a reinstall
+/// replaced.
+#[tauri::command]
+pub async fn receos_set_aside_strays(app: tauri::AppHandle, reset_bepinex: Option<bool>) -> Value {
+    let reset_bepinex = reset_bepinex.unwrap_or(false);
+    if game::game_running(&app) || game::rec_room_running() {
+        return json!({ "success": false, "error": "Close the game first." });
+    }
+    let client_dir = match installed_client_dir(&app, Network::RecEos) {
+        Ok(dir) => dir,
+        Err(e) => return json!({ "success": false, "error": e }),
+    };
+    let result = tokio::task::spawn_blocking(move || set_aside_strays(Path::new(&client_dir), reset_bepinex))
+        .await
+        .unwrap_or_else(|e| Err(e.to_string()));
+    match result {
+        Ok(moved) => {
+            if !moved.is_empty() {
+                crate::applog::backend("warn", "Rec EOS", format!("Set aside {} file(s) that kept Rec EOS's loader from starting: {}", moved.len(), moved.join(", ")));
+            }
+            json!({ "success": true, "moved": moved })
+        }
+        Err(e) => json!({ "success": false, "error": e }),
+    }
+}
+
+/// [`receos_set_aside_strays`]'s work, on `dir`.
+fn set_aside_strays(dir: &Path, reset_bepinex: bool) -> Result<Vec<String>, String> {
+    let files = read_files_manifest(dir).ok_or("This install has no file list.")?;
+    let mut strays = receos_strays(dir, &files);
+    if reset_bepinex {
+        for sub in ["BepInEx/cache", "BepInEx/config"] {
+            if dir.join(sub).exists() {
+                strays.push(sub.to_string());
+            }
+        }
+    }
+    if strays.is_empty() {
+        return Ok(strays);
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let aside = dir.join("UserData").join("RecEOS-set-aside").join(stamp.to_string());
+    let mut moved = Vec::new();
+    for rel in strays {
+        let Some(rel_path) = safe_rel_path(&rel) else { continue };
+        let (from, to) = (dir.join(&rel_path), aside.join(&rel_path));
+        if let Some(parent) = to.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("Couldn't set {rel} aside: {e}"))?;
+        }
+        fs::rename(&from, &to).map_err(|e| format!("Couldn't set {rel} aside: {e}"))?;
+        moved.push(rel);
+    }
+    Ok(moved)
+}
+
 /// The quick check Play runs for Rec EOS: is the BepInEx loader whole? Without
 /// it the game starts as plain Rec Room. Every loader file is checked for
 /// presence and size, and Doorstop's own two (tiny) by checksum too, which
@@ -1224,8 +1334,9 @@ pub async fn receos_check_loader(app: tauri::AppHandle) -> Value {
         Err(e) => return json!({ "status": "error", "error": e }),
     };
     let dir = client_dir.clone();
-    let checked = tokio::task::spawn_blocking(move || -> Option<Vec<(FileRecord, Problem)>> {
+    let checked = tokio::task::spawn_blocking(move || -> Option<(Vec<(FileRecord, Problem)>, Vec<String>)> {
         let files = read_files_manifest(Path::new(&dir))?;
+        let strays = receos_strays(Path::new(&dir), &files);
         let mut buf = vec![0u8; 64 * 1024];
         let mut damaged = Vec::new();
         for record in files.iter().filter(|f| crate::receos::is_loader_file(&f.path)) {
@@ -1245,19 +1356,19 @@ pub async fn receos_check_loader(app: tauri::AppHandle) -> Value {
                 damaged.push((record.clone(), problem));
             }
         }
-        Some(damaged)
+        Some((damaged, strays))
     })
     .await
     .unwrap_or(None);
 
-    let Some(damaged) = checked else {
+    let Some((damaged, strays)) = checked else {
         return match crate::receos::loader_problem(&client_dir) {
             Some(problem) => json!({ "status": "no-manifest", "problem": problem }),
             None => json!({ "status": "ok", "checked": 0 }),
         };
     };
     if damaged.is_empty() {
-        return json!({ "status": "ok" });
+        return json!({ "status": "ok", "stray": strays });
     }
     let list: Vec<Value> = damaged
         .iter()
@@ -1273,7 +1384,7 @@ pub async fn receos_check_loader(app: tauri::AppHandle) -> Value {
         client_dir,
         damaged: damaged.into_iter().map(|(record, _)| record).collect(),
     });
-    json!({ "status": "damaged", "damaged": list })
+    json!({ "status": "damaged", "damaged": list, "stray": strays })
 }
 
 /// Repair the files the last check of `network` found damaged.
@@ -1505,6 +1616,46 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn files_on_top_of_the_install_in_the_loaders_places_are_strays() {
+        let dir = temp_dir("strays");
+        let listed = ["version.dll", "GameAssembly.dll", "dotnet/coreclr.dll", "BepInEx/core/BepInEx.Core.dll"];
+        let unlisted = ["winhttp.dll", "dotnet/hostfxr.dll", "BepInEx/core/Old.dll", "BepInEx/patchers/p.dll"];
+        let fine = ["steam_appid.txt", "BepInEx/plugins/RecEOS.dll", "BepInEx/cache/x.dat", "UserLibs/EOSSDK.dll", "RecRoom_Data/a.dll"];
+        for f in listed.iter().chain(&unlisted).chain(&fine) {
+            let p = dir.join(f);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, "x").unwrap();
+        }
+        let files: Vec<FileRecord> = listed
+            .iter()
+            .map(|p| FileRecord { path: p.to_string(), size: 1, crc32: 0, at: None })
+            .collect();
+        let mut want: Vec<String> = unlisted.iter().map(|s| s.to_string()).collect();
+        want.sort();
+        assert_eq!(receos_strays(&dir, &files), want);
+
+        // Set aside: they leave the loader's places and are kept, and with a
+        // reset BepInEx's cache and settings go with them.
+        fs::create_dir_all(dir.join("BepInEx/config")).unwrap();
+        fs::write(dir.join("BepInEx/config/BepInEx.cfg"), "x").unwrap();
+        write_files_manifest(&dir, &files).unwrap();
+        let mut moved = set_aside_strays(&dir, true).unwrap();
+        moved.sort();
+        let mut expect = want.clone();
+        expect.extend(["BepInEx/cache".to_string(), "BepInEx/config".to_string()]);
+        expect.sort();
+        assert_eq!(moved, expect);
+        assert!(receos_strays(&dir, &files).is_empty());
+        assert!(!dir.join("BepInEx/cache").exists() && !dir.join("BepInEx/config").exists());
+        assert!(dir.join("BepInEx/plugins/RecEOS.dll").is_file() && dir.join("version.dll").is_file());
+        let kept = fs::read_dir(dir.join("UserData/RecEOS-set-aside")).unwrap().next().unwrap().unwrap().path();
+        assert!(kept.join("winhttp.dll").is_file() && kept.join("BepInEx/config/BepInEx.cfg").is_file());
+        // Nothing left the second time.
+        assert!(set_aside_strays(&dir, false).unwrap().is_empty());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     fn install(dir: &Path, zip: &[u8]) -> Vec<FileRecord> {

@@ -165,6 +165,8 @@ pub fn run() {
             verify::verify_client,
             verify::repair_client,
             verify::receos_check_loader,
+            verify::receos_set_aside_strays,
+            game::receos_bepinex_started,
             // Game
             game::launch_game,
             game::autoplay_vanilla,

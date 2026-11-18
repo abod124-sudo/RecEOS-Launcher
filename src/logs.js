@@ -557,6 +557,8 @@ const reportDraft = {
   linked: null,          // the log entry a report was started from
   attachLog: true,
   attachPrevious: false,
+  // Rec EOS's BepInEx log: on unless turned off (null = not decided yet).
+  attachGameLog: null,
   sending: false,
 };
 let reportCooldownTimer = null;
@@ -586,6 +588,14 @@ function reportLogText() {
 }
 
 function reportText() { return $('reportText').value.trim(); }
+
+/// "just now", "5 minutes ago", "3 hours ago", "2 days ago".
+function formatAgo(secs) {
+  if (secs < 60) return 'just now';
+  const [n, unit] = secs < 3600 ? [Math.floor(secs / 60), 'minute']
+    : secs < 86400 ? [Math.floor(secs / 3600), 'hour'] : [Math.floor(secs / 86400), 'day'];
+  return `${n} ${unit}${n === 1 ? '' : 's'} ago`;
+}
 
 function updateReportDescribe() {
   const len = reportText().length;
@@ -749,6 +759,23 @@ async function loadReportReview() {
     reportDraft.attachPrevious = false;
   }
   setToggleSwitch('tglReportPrev', !!reportDraft.attachPrevious);
+
+  // Rec EOS: the game's own log, which says whether the mod loaded at all.
+  const game = preview?.gameLog;
+  $('reportGameRow').hidden = !game;
+  $('reportPeekGameBtn').hidden = !game;
+  if (game) {
+    const age = game.ageSecs == null ? '' : ` · written ${formatAgo(game.ageSecs)}`;
+    $('reportGameMeta').textContent = game.found
+      ? `${game.lines} ${game.lines === 1 ? 'line' : 'lines'}${age}`
+      : 'No log: the mod loader has never started';
+    $('reportGameMeta').classList.toggle('is-bad', !game.found);
+    $('reportPeekGame').textContent = game.preview;
+    if (reportDraft.attachGameLog === null) reportDraft.attachGameLog = true;
+  } else {
+    reportDraft.attachGameLog = false;
+  }
+  setToggleSwitch('tglReportGame', !!reportDraft.attachGameLog);
   startReportCooldown(preview?.cooldown || 0);
 }
 
@@ -765,6 +792,7 @@ async function sendReport() {
       logs: reportDraft.attachLog ? reportLogText() : '',
       attachLog: reportDraft.attachLog,
       attachPrevious: !!reportDraft.attachPrevious,
+      attachGameLog: !!reportDraft.attachGameLog,
       linkedLine: reportDraft.linked ? (reportDraft.linked.line || logLineText(reportDraft.linked)) : null,
       diagnostics: reportDiagnostics(),
     });
@@ -788,6 +816,7 @@ function resetReportDraft() {
   reportDraft.linked = null;
   reportDraft.attachLog = true;
   reportDraft.attachPrevious = null;
+  reportDraft.attachGameLog = null;
   setReportCategory(null);
   setReportSeverity('medium');
   renderReportLinked();
@@ -865,7 +894,7 @@ function closeReport() {
     renderReportLinked();
   });
 
-  for (const [id, key] of [['tglReportLog', 'attachLog'], ['tglReportPrev', 'attachPrevious']]) {
+  for (const [id, key] of [['tglReportLog', 'attachLog'], ['tglReportPrev', 'attachPrevious'], ['tglReportGame', 'attachGameLog']]) {
     const el = $(id);
     const flip = () => {
       reportDraft[key] = !reportDraft[key];

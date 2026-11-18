@@ -2,6 +2,12 @@ name = "receos-bug-relay"
 main = "worker.js"
 compatibility_date = "2026-09-01"
 
+# The launcher sends to https://bugreports.rec-eos.com/report. The
+# workers.dev address stays on for launchers released before the move
+# (v4.0.0 and older send there).
+routes = [{ pattern = "bugreports.rec-eos.com", custom_domain = true }]
+workers_dev = true
+
 # A couple of reports per IP address per minute. Cloudflare only allows a
 # period of 10 or 60 seconds here.
 [[ratelimits]]

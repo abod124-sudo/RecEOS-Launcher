@@ -50,7 +50,26 @@ fn move_identifier_dir(base: &Path) {
     // Something in it is open (the old launcher's web view takes a moment to
     // let go), or the new folder already exists: move what can be moved,
     // never replacing a file the new launcher has written.
-    let _ = merge_move(&old, &new);
+    //
+    // Except a game folder (`client`, `client-receos`, ...) the new folder
+    // already has: merged file by file, the old install's files fill in
+    // whatever the current one lacks, so the game becomes a mix of two
+    // installs. Its BepInEx gets another build's core files, or an older
+    // Doorstop beside its own, and the game starts without Rec EOS while
+    // every file Verify Files knows of checks out. And since the old folder
+    // then never empties, that ran again at every launcher start.
+    let _ = fs::create_dir_all(&new);
+    if let Ok(entries) = fs::read_dir(&old) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let target = new.join(&name);
+            let is_game = name.to_string_lossy().to_ascii_lowercase().starts_with("client");
+            if is_game && target.exists() {
+                continue;
+            }
+            let _ = merge_move(&entry.path(), &target);
+        }
+    }
     // Only succeeds if that emptied it.
     let _ = fs::remove_dir(&old);
 }
@@ -183,6 +202,29 @@ mod tests {
         assert_eq!(fs::read_to_string(new.join("client").join("a.dat")).unwrap(), "a");
         // The old config stays, so the old folder does too.
         assert!(old.join("config.json").is_file());
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_game_folder_already_there_is_never_filled_in_from_the_old_one() {
+        let base = temp("games");
+        let (old, new) = (base.join(OLD_IDENTIFIER), base.join(NEW_IDENTIFIER));
+        fs::create_dir_all(old.join("client-receos").join("BepInEx").join("core")).unwrap();
+        fs::write(old.join("client-receos").join("winhttp.dll"), "old doorstop").unwrap();
+        fs::write(old.join("client-receos").join("BepInEx").join("core").join("Old.dll"), "x").unwrap();
+        fs::create_dir_all(old.join("client-vanilla")).unwrap();
+        fs::write(old.join("client-vanilla").join("RecRoom.exe"), "v").unwrap();
+        fs::create_dir_all(new.join("client-receos")).unwrap();
+        fs::write(new.join("client-receos").join("RecRoom.exe"), "new").unwrap();
+
+        move_identifier_dir(&base);
+
+        assert!(!new.join("client-receos").join("winhttp.dll").exists());
+        assert!(!new.join("client-receos").join("BepInEx").exists());
+        // A game the new folder doesn't have yet still moves.
+        assert!(new.join("client-vanilla").join("RecRoom.exe").is_file());
+        // The old one is left where it is.
+        assert!(old.join("client-receos").join("winhttp.dll").is_file());
         let _ = fs::remove_dir_all(&base);
     }
 

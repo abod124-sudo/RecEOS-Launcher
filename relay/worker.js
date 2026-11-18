@@ -8,7 +8,8 @@
 
 const MAX_BODY = 8 * 1024 * 1024; // Discord refuses uploads over 10 MB.
 const MAX_FILE = 3 * 1024 * 1024;
-const ALLOWED_FILES = new Set(["logs.txt", "previous-session.txt"]);
+// game-log.txt: Rec EOS's BepInEx log, from the game folder.
+const ALLOWED_FILES = new Set(["logs.txt", "previous-session.txt", "game-log.txt"]);
 
 // Discord's own limits for an embed.
 const LIMITS = { title: 256, description: 4096, fields: 25, fieldName: 256, fieldValue: 1024, footer: 2048 };
