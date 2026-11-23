@@ -226,6 +226,7 @@ impl Drop for DownloadGuard {
 /// Metadata persisted next to a partial download (`client.zip.part.meta`) so an
 /// interrupted download can be validated and resumed later. Survives launcher
 /// restarts alongside the `.part` file itself.
+#[derive(Clone)]
 struct PartMeta {
     url: String,
     etag: String,
@@ -234,6 +235,12 @@ struct PartMeta {
     /// Stella's can't: it sends the client with no length and no byte ranges,
     /// so asking for the rest gets the whole file again from the start.
     resumable: bool,
+    /// For a download fetched in pieces over several connections (see
+    /// `parallel_download`): how far each piece got. The `.part` file is then
+    /// the full size from the start, so its length says nothing about how much
+    /// of it is there. Empty for one fetched in a single stream, whose length
+    /// is exactly what was fetched.
+    pieces: Vec<crate::parallel_download::Piece>,
 }
 
 /// Whether a response says its server answers byte ranges: a 206 is proof,
@@ -262,14 +269,36 @@ fn read_part_meta(path: &Path) -> Option<PartMeta> {
             v.get("total").and_then(|t| t.as_u64()).unwrap_or(0) > 0
                 || !v.get("etag").and_then(|e| e.as_str()).unwrap_or("").is_empty()
         }),
+        pieces: v
+            .get("pieces")
+            .and_then(|p| p.as_array())
+            .map(|list| {
+                list.iter()
+                    .filter_map(|p| {
+                        let pos = p.get(0)?.as_u64()?;
+                        let end = p.get(1)?.as_u64()?;
+                        Some(crate::parallel_download::Piece { pos, end })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
     })
 }
 
 /// Persist the sidecar resume metadata (best-effort).
 fn write_part_meta(path: &Path, meta: &PartMeta) {
-    let v = json!({ "url": meta.url, "etag": meta.etag, "total": meta.total, "resumable": meta.resumable });
+    let mut v = json!({ "url": meta.url, "etag": meta.etag, "total": meta.total, "resumable": meta.resumable });
+    if !meta.pieces.is_empty() {
+        v["pieces"] = json!(meta.pieces.iter().map(|p| [p.pos, p.end]).collect::<Vec<_>>());
+    }
+    // Through a temporary file: a pieced download rewrites this every second,
+    // and one cut off halfway (a closed launcher) would leave a file that
+    // doesn't parse, and with it no record of the gigabytes already fetched.
     if let Ok(txt) = serde_json::to_string(&v) {
-        let _ = fs::write(path, txt);
+        let tmp = path.with_extension("meta.tmp");
+        if fs::write(&tmp, txt).is_ok() && fs::rename(&tmp, path).is_err() {
+            let _ = fs::remove_file(&tmp);
+        }
     }
 }
 
@@ -815,14 +844,28 @@ async fn download_client_impl(
     let mut resume_from: u64 = 0;
     if part_path.exists() {
         if let Some(m) = &existing_meta {
-            if m.url == resume_key {
+            // Only a single-stream partial is measured by its length; a pieced
+            // one is full size from the start (see `piece_resume`).
+            if m.url == resume_key && m.pieces.is_empty() {
                 resume_from = fs::metadata(&part_path).map(|md| md.len()).unwrap_or(0);
             }
         }
     }
+    // A download fetched in pieces continues from its pieces' recorded
+    // progress, provided they still describe this file and the file on disk.
+    let piece_resume = existing_meta
+        .as_ref()
+        .filter(|m| {
+            m.url == resume_key
+                && m.resumable
+                && !m.etag.is_empty()
+                && crate::parallel_download::pieces_cover(&m.pieces, m.total)
+                && fs::metadata(&part_path).map(|md| md.len()).ok() == Some(m.total)
+        })
+        .cloned();
     // A partial file we can't validate (missing/mismatched metadata) can't be
     // trusted — discard it and start clean.
-    if resume_from == 0 {
+    if resume_from == 0 && piece_resume.is_none() {
         let _ = fs::remove_file(&part_path);
         let _ = fs::remove_file(&meta_path);
     }
@@ -844,6 +887,11 @@ async fn download_client_impl(
         .build()
         .map_err(|e| e.to_string())?;
 
+    let resolved_etag: Option<String> = if let Some(meta) = piece_resume {
+        let etag = meta.etag.clone();
+        run_pieces(&app, http.clone(), &download_url, network, &part_path, &meta_path, meta, false).await?;
+        Some(etag)
+    } else {
     let send = |from: u64| {
         let mut req = http.get(&download_url).header("User-Agent", download_user_agent(network));
         if from > 0 {
@@ -940,6 +988,32 @@ async fn download_client_impl(
         ));
     }
 
+    // A big file from a server that answers byte ranges, with an ETag to hold
+    // every piece to the same build, is fetched over several connections at
+    // once: one stream from R2 runs at a few MB/s for a player far from it.
+    // A single-stream partial the server agreed to continue (a 206) carries on
+    // as it started.
+    let go_pieces = !is_resume
+        && resumable
+        && resolved_etag.is_some()
+        && total >= crate::parallel_download::MIN_PARALLEL_SIZE;
+    if go_pieces {
+        drop(response);
+        let meta = PartMeta {
+            url: resume_key.clone(),
+            etag: resolved_etag.clone().unwrap_or_default(),
+            total,
+            resumable: true,
+            pieces: crate::parallel_download::split(total),
+        };
+        // Full size up front: each piece is written to its own place in it,
+        // and the disk space is claimed before gigabytes are fetched into it.
+        fs::File::create(&part_path)
+            .and_then(|f| f.set_len(total))
+            .map_err(|e| format!("Failed to create partial file: {}", e))?;
+        write_part_meta(&meta_path, &meta);
+        run_pieces(&app, http.clone(), &download_url, network, &part_path, &meta_path, meta, restarted).await?;
+    } else {
     // Persist resume metadata up front, so even a hard close on the very next
     // chunk leaves enough behind to continue from.
     write_part_meta(&meta_path, &PartMeta {
@@ -947,6 +1021,7 @@ async fn download_client_impl(
         etag: resolved_etag.clone().unwrap_or_default(),
         total,
         resumable,
+        pieces: Vec::new(),
     });
     // At once, so Pause goes before anyone can press it, and a restart is
     // explained before the count is seen starting from 0.
@@ -1150,6 +1225,9 @@ async fn download_client_impl(
             "The download ended early, and this server can't continue one. Download again to start over.",
         ));
     }
+    }
+    resolved_etag
+    };
 
     // Download finished — promote the completed .part to the real zip and drop
     // the now-obsolete resume metadata.
@@ -1310,6 +1388,92 @@ async fn download_client_impl(
         "exePath": bat_path,
         "patchInstalled": patch_installed
     }))
+}
+
+/// Fetch what's missing of a download in pieces over several connections (see
+/// `parallel_download`), with the same progress events, Pause, Cancel and
+/// resume as a single-stream one. Ok once every byte is in `part_path`.
+#[allow(clippy::too_many_arguments)]
+async fn run_pieces(
+    app: &tauri::AppHandle,
+    http: reqwest::Client,
+    url: &str,
+    network: Network,
+    part_path: &Path,
+    meta_path: &Path,
+    meta: PartMeta,
+    restarted: bool,
+) -> Result<(), String> {
+    use crate::parallel_download::{fetch, FetchError, Outcome};
+    let total = meta.total;
+    let pct_of = |downloaded: u64| ((downloaded as f64 / total as f64) * 100.0).min(99.0) as i64;
+    let already = total - crate::parallel_download::remaining(&meta.pieces);
+    let _ = app.emit("download-progress", json!({
+        "phase": "download",
+        "pct": pct_of(already),
+        "downloaded": already,
+        "total": total,
+        "speed": 0,
+        "eta": -1,
+        "resumable": true,
+        "restarted": restarted
+    }));
+
+    let start = std::time::Instant::now();
+    let progress = |p: crate::parallel_download::Progress| {
+        let elapsed = start.elapsed().as_secs_f64().max(0.001);
+        let speed = p.session_bytes as f64 / elapsed;
+        let eta = if speed > 0.0 { (total.saturating_sub(p.downloaded) as f64 / speed) as i64 } else { -1 };
+        let _ = app.emit("download-progress", json!({
+            "phase": "download",
+            "pct": pct_of(p.downloaded),
+            "downloaded": p.downloaded,
+            "total": total,
+            "speed": speed as u64,
+            "eta": eta
+        }));
+    };
+    let save = |pieces: &[crate::parallel_download::Piece]| {
+        write_part_meta(meta_path, &PartMeta { pieces: pieces.to_vec(), ..meta.clone() });
+    };
+    let outcome = fetch(
+        http,
+        url.to_string(),
+        download_user_agent(network),
+        meta.etag.clone(),
+        total,
+        part_path,
+        meta.pieces.clone(),
+        progress,
+        save,
+    )
+    .await;
+    match outcome {
+        Ok(Outcome::Done) => Ok(()),
+        Ok(Outcome::Paused) => {
+            let downloaded = read_part_meta(meta_path)
+                .map(|m| total.saturating_sub(crate::parallel_download::remaining(&m.pieces)))
+                .unwrap_or(already);
+            let _ = app.emit("download-progress", json!({
+                "phase": "paused",
+                "pct": pct_of(downloaded),
+                "downloaded": downloaded,
+                "total": total
+            }));
+            Err("Paused".into())
+        }
+        Ok(Outcome::Cancelled) => {
+            let _ = fs::remove_file(part_path);
+            let _ = fs::remove_file(meta_path);
+            Err(CANCELLED.into())
+        }
+        Err(FetchError::Changed) => {
+            let _ = fs::remove_file(part_path);
+            let _ = fs::remove_file(meta_path);
+            Err("The client on the server changed during the download. Download again to start over.".into())
+        }
+        Err(FetchError::Failed(message)) => Err(format!("{} Resume to continue.", message)),
+    }
 }
 
 /// The end of a repair that downloaded the whole zip: take just the damaged
@@ -1627,7 +1791,13 @@ pub async fn resumable_download_info(app: tauri::AppHandle, network: Option<Stri
         let _ = fs::remove_file(&meta_path);
         return json!({ "resumable": false });
     }
-    let total = meta.map(|m| m.total).unwrap_or(0);
+    let total = meta.as_ref().map(|m| m.total).unwrap_or(0);
+    // A pieced download's file is full size from the start; its pieces say
+    // how much of it is there.
+    let downloaded = match &meta {
+        Some(m) if !m.pieces.is_empty() => m.total.saturating_sub(crate::parallel_download::remaining(&m.pieces)),
+        _ => downloaded,
+    };
 
     json!({
         "resumable": true,
@@ -3243,7 +3413,7 @@ mod resume_tests {
         let dir = std::env::temp_dir().join(format!("radium-resume-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("client.zip.part.meta");
-        write_part_meta(&path, &PartMeta { url: "https://x/c.zip".into(), etag: String::new(), total: 0, resumable: false });
+        write_part_meta(&path, &PartMeta { url: "https://x/c.zip".into(), etag: String::new(), total: 0, resumable: false, pieces: vec![] });
         assert!(!read_part_meta(&path).unwrap().resumable);
         // One written before this was recorded: resumable if the server said
         // anything to check a continued file against (a length or an ETag)...
@@ -3254,6 +3424,13 @@ mod resume_tests {
         // ...and not if it said neither, as Stella's doesn't.
         fs::write(&path, r#"{"url":"https://x/c.zip","etag":"","total":0}"#).unwrap();
         assert!(!read_part_meta(&path).unwrap().resumable);
+        // A pieced download's progress survives the round trip.
+        let pieces = vec![
+            crate::parallel_download::Piece { pos: 7, end: 10 },
+            crate::parallel_download::Piece { pos: 20, end: 20 },
+        ];
+        write_part_meta(&path, &PartMeta { url: "https://x/c.zip".into(), etag: "\"e\"".into(), total: 20, resumable: true, pieces: pieces.clone() });
+        assert_eq!(read_part_meta(&path).unwrap().pieces, pieces);
         let _ = fs::remove_dir_all(&dir);
     }
 }

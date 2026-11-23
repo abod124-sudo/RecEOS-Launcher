@@ -10,6 +10,7 @@ pub mod game;
 pub mod ge_proton;
 pub mod linux;
 pub mod migrate;
+pub mod parallel_download;
 pub mod receos;
 pub mod receos_api;
 pub mod receos_live;
