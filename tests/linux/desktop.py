@@ -502,13 +502,15 @@ def main():
             assert driver.invoke("cmd_save_config", {"config": original_config})
         record("Nested or unreadable Proton prefixes block cleanup without removing saves, even without Steam")
         refused = driver.async_js("try { await window.__TAURI__.core.invoke('download_update',{url:'https://github.com/abod124-sudo/RecEOS-Launcher/releases/download/v99/setup.exe',placeOnDesktop:false});return false;} catch(error){return String(error);}")
-        assert "release downloads" in refused
+        # The AppImage can update itself now, but only with the update the
+        # last check offered: an unoffered URL is refused before any download.
+        assert "isn't the update the launcher last found" in refused, refused
         driver.js("showUpdateModal({currentVersion:'4.0.0',latestVersion:'99.0.0',downloadUrl:'',releaseUrl:'https://github.com/abod124-sudo/RecEOS-Launcher/releases/latest'});")
         assert driver.js("return document.querySelector('#updateNowBtn').textContent") == "Open Release Page"
         driver.click("#updateNowBtn")
         wait(lambda: opened_url.exists(), "release page opens through the native URL handler")
         assert opened_url.read_text().strip() == "https://github.com/abod124-sudo/RecEOS-Launcher/releases/latest"
-        record("Linux refuses Windows update installers and offers release downloads")
+        record("Linux only installs the update it was offered, and an unsigned release opens its page")
 
         data = Path(os.environ["XDG_DATA_HOME"]) / "com.receos.launcher"
         stella = data / "client-stella"
