@@ -7,8 +7,8 @@ import time
 import dbus
 from desktop import Driver, wait
 
-# The installed .deb by default; the AppImage on distros without dpkg (Arch).
-application = Path(os.environ.get("RECEOS_APPLICATION", "/usr/bin/rec-eos-launcher"))
+# The AppImage that install-packages.sh set up, unless told otherwise.
+application = Path(os.environ.get("RECEOS_APPLICATION", "/tools/receos-appimage"))
 
 root = Path(tempfile.mkdtemp(prefix="receos-no-tray-"))
 for key, subdir in [("XDG_CONFIG_HOME", "config"), ("XDG_DATA_HOME", "data"), ("XDG_CACHE_HOME", "cache")]:

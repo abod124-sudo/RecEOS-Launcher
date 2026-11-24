@@ -74,8 +74,8 @@ An **unofficial** launcher for Rec Room revival servers.
 current build from the [Releases page](https://github.com/abod124-sudo/RecEOS-Launcher/releases/latest).
 It's an installer for Windows x64.
 
-Linux (Ubuntu 22.04+, Debian 12+, x64) is new: `.deb` and AppImage builds that run
-the games through Proton. See [Linux](docs/linux.md) for setup and what is confirmed so far.
+Linux (Ubuntu 22.04+, Debian 12+, x64) is new: an AppImage that runs the games through
+Proton and updates itself like the Windows version. See [Linux](docs/linux.md) for setup and what is confirmed so far.
 
 Already on Radium Launcher? The installer moves it over and keeps your settings and game
 files: the app goes from `%LOCALAPPDATA%\Radium Launcher` to `%LOCALAPPDATA%\Rec EOS Launcher`

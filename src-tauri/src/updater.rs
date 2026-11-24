@@ -109,15 +109,12 @@ pub async fn check_for_update(app: tauri::AppHandle) -> serde_json::Value {
         .unwrap_or("")
         .to_string();
 
-    // Find the installer asset: name contains "setup" and ends with ".exe" (case-insensitive)
+    // This platform's update: the setup .exe on Windows, the x64 AppImage on
+    // Linux when the launcher was started from one (it replaces that file).
+    let platform = UpdatePlatform::current();
     let asset = release["assets"].as_array().and_then(|assets| {
         assets.iter().find(|asset| {
-            if let Some(name) = asset["name"].as_str() {
-                let lower = name.to_lowercase();
-                cfg!(windows) && lower.contains("setup") && lower.ends_with(".exe")
-            } else {
-                false
-            }
+            asset["name"].as_str().is_some_and(|name| platform.is_update_asset(name))
         })
     });
 
@@ -176,6 +173,133 @@ pub async fn check_for_update(app: tauri::AppHandle) -> serde_json::Value {
         "signed": signed,
         "releaseNotes": release_notes
     })
+}
+
+/// What kind of update this launcher can install on itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UpdatePlatform {
+    /// Runs the NSIS setup .exe, which installs over this one.
+    WindowsInstaller,
+    /// Replaces the AppImage it was started from and starts it again.
+    LinuxAppImage,
+    /// Nothing it can install itself (a Linux launcher not started from its
+    /// AppImage, or another OS): the release page is offered instead.
+    None,
+}
+
+impl UpdatePlatform {
+    fn current() -> Self {
+        if cfg!(windows) {
+            Self::WindowsInstaller
+        } else if cfg!(target_os = "linux") && running_appimage().is_some() {
+            Self::LinuxAppImage
+        } else {
+            Self::None
+        }
+    }
+
+    fn is_update_asset(self, name: &str) -> bool {
+        let lower = name.to_lowercase();
+        match self {
+            Self::WindowsInstaller => lower.contains("setup") && lower.ends_with(".exe"),
+            // Only x64 is built. GitHub turns the spaces in "Rec EOS
+            // Launcher_4.0.1_amd64.AppImage" into dots; either matches.
+            Self::LinuxAppImage => {
+                lower.ends_with(".appimage") && (lower.contains("amd64") || lower.contains("x86_64"))
+            }
+            Self::None => false,
+        }
+    }
+}
+
+/// The AppImage file this launcher was started from, as its runtime reports
+/// it in `APPIMAGE`. That file is what a Linux update replaces.
+fn running_appimage() -> Option<std::path::PathBuf> {
+    let path = std::path::PathBuf::from(std::env::var_os("APPIMAGE")?);
+    (path.is_absolute() && path.is_file()).then_some(path)
+}
+
+/// Put a verified AppImage in place of `target`, keeping its path, so the
+/// autostart entry and any shortcut still start the launcher.
+///
+/// Written beside it and renamed over it. The running launcher reads its own
+/// files from the old AppImage through a FUSE mount of that file, so writing
+/// into it in place would corrupt the program that is running; a rename only
+/// swaps which file the name points to, and the old one lives on until this
+/// process exits.
+#[cfg(unix)]
+fn replace_appimage(target: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = target.parent().ok_or("The AppImage has no folder.")?;
+    let name = target.file_name().ok_or("The AppImage has no name.")?.to_string_lossy();
+    let temp = dir.join(format!(".{}.update-{}", name, std::process::id()));
+    let cant_write = |e: std::io::Error| {
+        if e.kind() == std::io::ErrorKind::PermissionDenied {
+            format!(
+                "The launcher can't write to {}. Move the AppImage to a folder you own (your home folder, for example), \
+                 or download the update from the release page.",
+                dir.display()
+            )
+        } else {
+            format!("Couldn't save the update: {e}")
+        }
+    };
+
+    let _ = std::fs::remove_file(&temp);
+    let written = (|| {
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        // Set after creating: the mode given at creation is cut by the umask.
+        let mode = std::fs::metadata(target).map(|m| m.permissions().mode()).unwrap_or(0o755) | 0o755;
+        std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(mode & 0o7777))?;
+        std::fs::rename(&temp, target)
+    })();
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&temp);
+        return Err(cant_write(e));
+    }
+    Ok(())
+}
+
+/// Start the AppImage at `target` once this process has exited. Started
+/// sooner, the new launcher would find this one still holding the single
+/// instance and hand over to it instead of opening.
+///
+/// The variables the AppImage runtime set for this launcher point into its
+/// mount, which goes away when it exits; the new AppImage sets its own.
+#[cfg(target_os = "linux")]
+fn restart_into(target: &std::path::Path) -> Result<(), String> {
+    use std::os::unix::process::CommandExt;
+
+    const WAIT_THEN_START: &str =
+        "i=0; while kill -0 \"$1\" 2>/dev/null && [ $i -lt 150 ]; do sleep 0.2; i=$((i+1)); done; exec \"$0\"";
+    let mut cmd = crate::linux::system_command("/bin/sh");
+    cmd.arg("-c")
+        .arg(WAIT_THEN_START)
+        .arg(target)
+        .arg(std::process::id().to_string())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .process_group(0);
+    for key in ["APPIMAGE", "APPDIR", "ARGV0", "OWD"] {
+        cmd.env_remove(key);
+    }
+    if let Some(appdir) = std::env::var_os("APPDIR").filter(|d| !d.is_empty()) {
+        let appdir = std::path::PathBuf::from(appdir);
+        for key in ["PATH", "XDG_DATA_DIRS"] {
+            if let Some(value) = std::env::var_os(key) {
+                let kept: Vec<_> = std::env::split_paths(&value).filter(|p| !p.starts_with(&appdir)).collect();
+                if let Ok(joined) = std::env::join_paths(kept) {
+                    cmd.env(key, joined);
+                }
+            }
+        }
+    }
+    cmd.spawn().map(|_| ()).map_err(|e| format!("The update is installed, but the launcher couldn't restart: {e}. Start it again."))
 }
 
 /// Whether `url` is a release asset of this repository on GitHub.
@@ -341,8 +465,14 @@ pub async fn download_update(
     url: String,
     place_on_desktop: bool,
 ) -> Result<serde_json::Value, String> {
-    if !cfg!(windows) {
-        return Err("Install Linux launcher updates from the release downloads page.".into());
+    let platform = UpdatePlatform::current();
+    if platform == UpdatePlatform::None {
+        return Err(if cfg!(target_os = "linux") {
+            "This launcher wasn't started from its AppImage, so it can't update itself. Download the AppImage from the release page."
+        } else {
+            "This launcher can't update itself here. Download the update from the release page."
+        }
+        .into());
     }
     // Security check: restrict downloads to trusted official release URLs
     if !is_official_release_asset(&url) {
@@ -388,7 +518,9 @@ pub async fn download_update(
     let client = reqwest::Client::builder()
         .https_only(true)
         .connect_timeout(std::time::Duration::from_secs(15))
-        .timeout(std::time::Duration::from_secs(300))
+        // The AppImage is about 100 MB to the installer's 7, so a slow line
+        // gets longer for it.
+        .timeout(std::time::Duration::from_secs(if platform == UpdatePlatform::LinuxAppImage { 1200 } else { 300 }))
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
@@ -431,6 +563,17 @@ pub async fn download_update(
     // doesn't verify is never written where it could be run.
     let signature = fetch_signature(&client, &signature_url).await?;
     verify_update_signature(&bytes, &signature)?;
+
+    #[cfg(target_os = "linux")]
+    if platform == UpdatePlatform::LinuxAppImage {
+        let _ = place_on_desktop;
+        let target = running_appimage().ok_or("The launcher's AppImage is no longer where it was started from.")?;
+        replace_appimage(&target, &bytes)?;
+        restart_into(&target)?;
+        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        app.exit(0);
+        return Ok(json!({ "success": true, "restarting": true }));
+    }
 
     // A new file only. The name is unpredictable, but if something did put a
     // file there first, that file is not the one that was just checked.
@@ -528,6 +671,16 @@ mod release_url_tests {
         assert!(is_official_release_asset(
             "https://github.com/abod124-sudo/RecEOS-Launcher/releases/download/v4.0.0/Rec.EOS.Launcher_4.0.0_x64-setup.exe"
         ));
+    }
+
+    #[test]
+    fn a_linux_appimage_and_its_signature_are_release_assets() {
+        for url in [
+            "https://github.com/abod124-sudo/RecEOS-Launcher/releases/download/v4.0.1/Rec.EOS.Launcher_4.0.1_amd64.AppImage",
+            "https://github.com/abod124-sudo/RecEOS-Launcher/releases/download/v4.0.1/Rec.EOS.Launcher_4.0.1_amd64.AppImage.sig",
+        ] {
+            assert!(is_official_release_asset(url), "{url}");
+        }
     }
 
     #[test]
@@ -639,5 +792,56 @@ mod installer_cleanup_tests {
         assert!(log.exists(), "only .exe files match");
 
         let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod platform_tests {
+    use super::UpdatePlatform;
+
+    #[test]
+    fn each_platform_picks_only_its_own_update() {
+        let names = [
+            "Rec.EOS.Launcher_4.0.1_x64-setup.exe",
+            "Rec.EOS.Launcher_4.0.1_x64-setup.exe.sig",
+            "Rec.EOS.Launcher_4.0.1_amd64.AppImage",
+            "Rec.EOS.Launcher_4.0.1_amd64.AppImage.sig",
+            "Rec EOS Launcher_4.0.1_amd64.AppImage",
+            "Rec.EOS.Launcher_4.0.1_aarch64.AppImage",
+            "Rec.EOS.Launcher_4.0.1_amd64.deb",
+        ];
+        let picked = |p: UpdatePlatform| names.iter().filter(|n| p.is_update_asset(n)).copied().collect::<Vec<_>>();
+        assert_eq!(picked(UpdatePlatform::WindowsInstaller), ["Rec.EOS.Launcher_4.0.1_x64-setup.exe"]);
+        assert_eq!(
+            picked(UpdatePlatform::LinuxAppImage),
+            ["Rec.EOS.Launcher_4.0.1_amd64.AppImage", "Rec EOS Launcher_4.0.1_amd64.AppImage"]
+        );
+        assert!(picked(UpdatePlatform::None).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_appimage_is_replaced_whole_and_stays_runnable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("radium-appimage-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("Rec EOS Launcher.AppImage");
+        std::fs::write(&target, b"old").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // Something still holding the old file (the running launcher's mount)
+        // keeps reading the old bytes.
+        let held = std::fs::File::open(&target).unwrap();
+
+        super::replace_appimage(&target, b"new version").unwrap();
+
+        assert_eq!(std::fs::read(&target).unwrap(), b"new version");
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode();
+        assert_eq!(mode & 0o755, 0o755, "{mode:o}");
+        let mut old = String::new();
+        std::io::Read::read_to_string(&mut &held, &mut old).unwrap();
+        assert_eq!(old, "old");
+        let leftovers: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(leftovers.len(), 1, "{leftovers:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1,7 +1,7 @@
 # Linux
 
-The Linux launcher runs on **Ubuntu 22.04+ and Debian 12+ (x64)** as a `.deb`
-or AppImage. Games run through Valve's Proton. **Linux support is new:**
+The Linux launcher runs on **Ubuntu 22.04+ and Debian 12+ (x64)** as an
+AppImage. Games run through Valve's Proton. **Linux support is new:**
 gameplay on real Linux PCs has not been confirmed for every revival yet (see
 [Status](#status)), and VR is not supported.
 
@@ -13,11 +13,16 @@ gameplay on real Linux PCs has not been confirmed for every revival yet (see
    example Proton 11.0). Steam installs the Steam Linux Runtime it needs.
 3. Install your graphics driver with **Vulkan 1.3** support (see
    [DXVK's driver list](https://github.com/doitsujin/dxvk/wiki/Driver-support)).
-4. Install the launcher:
-   - `.deb`: `sudo apt install ./Rec*.deb`
-   - AppImage: `chmod +x Rec*.AppImage` and run it. It needs WebKitGTK 4.1,
-     `xdg-utils`, `libnotify-bin`, and on Wayland `xwayland`. Some systems
-     also need `libfuse2`.
+4. Download the AppImage, put it in a folder you own (your home folder, for
+   example), `chmod +x Rec*.AppImage` and run it. It needs WebKitGTK 4.1,
+   `xdg-utils`, `libnotify-bin`, and on Wayland `xwayland`. Some systems
+   also need `libfuse2`.
+
+The launcher updates itself like the Windows version: when a new version is
+out, **Update Now** downloads it, checks its signature, puts it in place of
+the AppImage you started (same file name and folder, so shortcuts and "start
+with the computer" keep working) and restarts. That needs write access to the
+AppImage's folder, which is why it shouldn't live somewhere like `/opt`.
 
 The tray icon needs a desktop with tray support (GNOME needs an AppIndicator
 extension). Without one, closing the window quits the launcher.

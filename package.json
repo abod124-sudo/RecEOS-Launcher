@@ -9,7 +9,7 @@
     "dev:x64": "tauri dev --target x86_64-pc-windows-msvc",
     "build:x64": "node scripts/build.mjs --target x86_64-pc-windows-msvc",
     "sign:update": "node scripts/sign-update.mjs",
-    "build:linux": "node scripts/build.mjs --linux --target x86_64-unknown-linux-gnu",
+    "build:linux": "node scripts/build.mjs --linux --target x86_64-unknown-linux-gnu --bundles appimage",
     "dev:linux": "node scripts/build.mjs --linux --dev --target x86_64-unknown-linux-gnu",
     "prepare:proton-helper": "node scripts/prepare-linux.mjs --build-helper"
   },

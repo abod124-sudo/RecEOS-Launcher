@@ -6889,7 +6889,8 @@ $('updateNowBtn')?.addEventListener('click', async () => {
     result = { success: false, error: String(e) };
   }
   if (result?.success) {
-    if (status) status.textContent = 'Update downloaded! Launching installer...';
+    // Linux replaces its AppImage and starts it again; Windows runs the installer.
+    if (status) status.textContent = result.restarting ? 'Update installed! Restarting...' : 'Update downloaded! Launching installer...';
     addLog('Launcher update started — restarting.', 'ok', 'update');
     // App will quit shortly from main process
   } else {

@@ -2,8 +2,8 @@
 set -euo pipefail
 output=${1:-/tmp/receos-desktop-results}
 mkdir -p "$output" "$HOME"
-# RECEOS_FORMATS=appimage on distros that cannot install the .deb (Arch).
-formats=${RECEOS_FORMATS:-deb appimage}
+# Linux ships as the AppImage only; RECEOS_FORMATS=deb tests a locally built .deb.
+formats=${RECEOS_FORMATS:-appimage}
 for format in $formats; do
   if [ "$format" = deb ]; then application=/usr/bin/rec-eos-launcher; else application=/tools/receos-appimage; fi
   for display in x11 wayland; do

@@ -1,6 +1,7 @@
 // Signs this version's installers for the launcher's in-app updater, after
 // `tauri build` (`npm run build` runs it). Each `...-setup.exe` gets a
-// `...-setup.exe.sig` beside it. Upload BOTH to the GitHub release: a release
+// `...-setup.exe.sig` beside it; a Linux AppImage named on the command line
+// gets its `.AppImage.sig`. Upload BOTH to the GitHub release: a release
 // without the .sig is offered to users as its web page instead of being
 // installed from the launcher (see verify_update_signature in updater.rs).
 //
@@ -47,7 +48,16 @@ const bundleDirs = [path.join(target, 'release', 'bundle', 'nsis')];
 for (const entry of fs.existsSync(target) ? fs.readdirSync(target, { withFileTypes: true }) : []) {
   if (entry.isDirectory()) bundleDirs.push(path.join(target, entry.name, 'release', 'bundle', 'nsis'));
 }
-const installers = bundleDirs
+// Files named on the command line are signed instead: the Linux AppImage,
+// which CI builds, is downloaded and signed here, since the key never leaves
+// this PC: `npm run sign:update -- "path/to/Rec EOS Launcher_<v>_amd64.AppImage"`.
+const named = process.argv.slice(2).map((file) => path.resolve(file));
+for (const file of named) {
+  if (!fs.existsSync(file)) fail(`${file} doesn't exist.`);
+  if (!/(-setup\.exe|\.AppImage)$/.test(file)) fail(`${file} isn't a -setup.exe or an .AppImage.`);
+  if (!path.basename(file).includes(`_${version}_`)) fail(`${file} isn't version ${version} (tauri.conf.json).`);
+}
+const installers = named.length ? named : bundleDirs
   .filter((dir) => fs.existsSync(dir))
   .flatMap((dir) => fs.readdirSync(dir).map((name) => path.join(dir, name)))
   .filter((file) => file.endsWith('-setup.exe') && path.basename(file).includes(`_${version}_`));
@@ -61,4 +71,4 @@ for (const installer of installers) {
   if (!fs.existsSync(`${installer}.sig`)) fail(`No signature was written for ${installer}.`);
   console.log(`Signed: ${installer}.sig`);
 }
-console.log('\nUpload each -setup.exe together with its .sig to the GitHub release.');
+console.log('\nUpload each -setup.exe and .AppImage together with its .sig to the GitHub release.');

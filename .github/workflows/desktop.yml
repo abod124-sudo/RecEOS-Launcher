@@ -81,7 +81,7 @@ jobs:
       - run: xvfb-run -a cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
       - run: npm run build:linux
       - name: Package layouts, linking and headless frontend startup
-        run: bash scripts/smoke-linux.sh src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+        run: bash scripts/smoke-linux.sh src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
       - name: Prepare desktop test driver
         run: |
           cargo install tauri-driver --version 2.1.0 --locked --root /tmp/receos-driver
@@ -97,9 +97,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: linux-x64-gameplay-validation-pending
-          path: |
-            src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
-            src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+          path: src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
           if-no-files-found: error
 
   linux-desktop:
@@ -130,27 +128,26 @@ jobs:
         with:
           name: linux-desktop-driver
           path: src-tauri/target/linux-validation/account-free
-      - name: Install both package formats
+      # Linux ships as the AppImage only (it updates itself, see updater.rs).
+      - name: Install the AppImage
         shell: bash
         run: |
-          deb=$(find src-tauri/target/linux-validation/account-free/release-ubuntu22 -name '*.deb' -print -quit)
           image=$(find src-tauri/target/linux-validation/account-free/release-ubuntu22 -name '*.AppImage' -print -quit)
-          bash tests/linux/install-packages.sh "$deb" "$image"
+          bash tests/linux/install-packages.sh '' "$image"
       - name: X11 and Wayland desktop integration
         shell: bash
         run: |
           user=$(getent passwd 1000 | cut -d: -f1)
           # The real GE-Proton download (~570 MB) runs in one job only.
           ge=""; if [ "${{ matrix.image }}" = "ubuntu:24.04" ]; then ge=1; fi
-          runuser -u "$user" -- env HOME=/tmp/receos-test-home RECEOS_TEST_GE_INSTALL="$ge" bash tests/linux/run-desktop-matrix.sh /tmp/receos-desktop-results
+          runuser -u "$user" -- env HOME=/tmp/receos-test-home RECEOS_FORMATS=appimage RECEOS_TEST_GE_INSTALL="$ge" bash tests/linux/run-desktop-matrix.sh /tmp/receos-desktop-results
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: desktop-results-${{ strategy.job-index }}
           path: /tmp/receos-desktop-results
 
-  # Arch can't install the .deb, so only the AppImage is checked there: the
-  # same X11, Wayland and no-tray-host runs, on Arch's newer libraries. This
+  # The same X11, Wayland and no-tray-host runs on Arch's newer libraries. This
   # is what caught the bundled libwayland breaking EGL on a newer Mesa.
   linux-desktop-arch:
     needs: linux
