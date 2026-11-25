@@ -2,6 +2,7 @@
   "name": "rec-eos-launcher",
   "version": "4.0.0",
   "description": "Rec EOS Launcher — Rec Room revival launcher",
+  "license": "GPL-3.0-only",
   "private": true,
   "scripts": {
     "dev": "node scripts/build.mjs --dev",

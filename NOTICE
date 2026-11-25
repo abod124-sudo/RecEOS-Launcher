@@ -1,0 +1,36 @@
+Rec EOS Launcher
+Copyright (C) 2026 abod124-sudo
+https://github.com/abod124-sudo/RecEOS-Launcher
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, version 3 (see the LICENSE file), with the additional terms below.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+
+ADDITIONAL TERMS (GNU GPL version 3, section 7)
+-----------------------------------------------
+
+These terms apply to this program and to any work based on it. Anyone who
+receives a copy may remove none of them.
+
+1. Author attribution (section 7(b)).
+   Every copy and every modified version must keep this NOTICE file and the
+   author attribution "Based on Rec EOS Launcher by abod124-sudo" together with
+   the link https://github.com/abod124-sudo/RecEOS-Launcher. A version with a
+   user interface must show that attribution among its Appropriate Legal
+   Notices (section 5(d)), for example on its About screen.
+
+2. Modified versions must be marked (section 7(c)).
+   A modified version must not present itself as the original Rec EOS Launcher
+   or as made or endorsed by abod124-sudo. It must say that it is modified.
+
+3. Name and logos (section 7(e)).
+   This licence grants no right to use the names "Rec EOS" or "Rec EOS
+   Launcher", or the Rec EOS logo and icon images (src/assets/receos-*.png,
+   src/assets/logo-mark.png, src-tauri/icons/ and icon.ico), as the name or
+   branding of a modified version. A modified version must use its own name
+   and its own logo.

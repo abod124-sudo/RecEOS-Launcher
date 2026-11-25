@@ -1678,6 +1678,11 @@ async function loadVersion() {
   if (about) about.textContent = v ? `Version ${v}` : '';
 }
 
+// About: the licence and source links (GPL-3.0 section 5(d) notices).
+const SOURCE_URL = 'https://github.com/abod124-sudo/RecEOS-Launcher';
+$('btnAboutSource')?.addEventListener('click', () => window.radium?.openUrl(SOURCE_URL));
+$('btnAboutLicense')?.addEventListener('click', () => window.radium?.openUrl(`${SOURCE_URL}/blob/main/LICENSE`));
+
 async function loadConfig() {
   platformCapabilities = await window.radium?.getPlatformCapabilities?.() || platformCapabilities;
   document.body.classList.toggle('platform-linux', platformCapabilities.linux === true);

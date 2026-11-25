@@ -3,6 +3,7 @@ name = "rec-eos-launcher"
 version = "4.0.0"
 description = "Radium — Custom Rec Room Private Server Launcher"
 authors = ["abod124-sudo"]
+license = "GPL-3.0-only"
 edition = "2021"
 
 [lib]

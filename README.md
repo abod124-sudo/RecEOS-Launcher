@@ -121,3 +121,18 @@ needs adding once: `rustup target add x86_64-pc-windows-msvc`.
 ## Note
 
 Parts of this launcher's codebase were written/co-authored with the help of AI coding assistants.
+
+---
+
+## License
+
+Copyright (C) 2026 abod124-sudo.
+
+Rec EOS Launcher is free software under the [GNU General Public License v3](LICENSE), with
+extra terms in [NOTICE](NOTICE). You may use, change and share it, and a version you share
+must also be GPL-3.0 with its source published. A version you share must also:
+
+- keep the credit "Based on Rec EOS Launcher by abod124-sudo" with a link to this repository,
+  shown on its About screen;
+- say that it's modified, and not present itself as the original;
+- use its own name and logo, not "Rec EOS" or the Rec EOS logo and icons.
