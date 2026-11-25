@@ -124,7 +124,9 @@
 
   const NETWORKS = [
     { id: 'receos', label: 'Rec EOS', logo: 'assets/receos-icon.png' },
-    { id: 'radium', label: 'Radium', logo: 'logo.png' },
+    // Radium is left out while it is down for maintenance (app.js
+    // NETWORKS.radium.maintenance); put this row back with it.
+    // { id: 'radium', label: 'Radium', logo: 'logo.png' },
     { id: 'vanilla', label: 'Vanilla', logo: 'assets/vanilla-logo.png' },
     { id: 'stella', label: 'Stella', logo: 'assets/stella-logo.png' },
   ];

@@ -197,7 +197,11 @@ const NETWORKS = {
     // only — this flag is the switch if that ever changes.
     hasPhotoFeed: false,
     // Radium resolves its own download URL from the recroom.baby page.
-    needsConfiguredDownloadUrl: false
+    needsConfiguredDownloadUrl: false,
+    // Down for maintenance: the switcher shows it greyed out with this notice
+    // and refuses to switch to it, and a launcher left on it starts on Rec EOS.
+    // Delete this line to bring Radium back.
+    maintenance: 'Radium is down for maintenance. Check back later.'
   },
   vanilla: {
     label: 'VANILLA',
@@ -1744,7 +1748,21 @@ async function loadConfig() {
 
   // Network last, so the brand and capability gating are applied against a
   // fully-loaded config.
-  applyNetworkUI(NETWORKS[config.network] ? config.network : 'radium');
+  // A network that is down for maintenance can't be used, so a launcher left
+  // on one starts on Rec EOS instead, and says why.
+  const savedNet = NETWORKS[config.network] ? config.network : 'receos';
+  if (NETWORKS[savedNet].maintenance) {
+    config.network = 'receos';
+    window.radium?.saveConfig({ ...config }).catch?.(() => {});
+    setTimeout(() => toast(`${NETWORKS[savedNet].maintenance} Switched to Rec EOS.`, 'warn', 6000), 800);
+  }
+  applyNetworkUI(config.network === savedNet ? savedNet : 'receos');
+  document.querySelectorAll('#networkMenu .network-option').forEach(opt => {
+    const msg = NETWORKS[opt.dataset.network]?.maintenance;
+    opt.classList.toggle('is-maintenance', !!msg);
+    if (msg) opt.setAttribute('aria-disabled', 'true');
+    else opt.removeAttribute('aria-disabled');
+  });
   if (platformCapabilities.linux) {
     $('protonNetwork').value = activeNetwork;
     refreshProtonPage();
@@ -7125,6 +7143,11 @@ function openNetworkMenu() {
 async function setNetwork(name) {
   if (!NETWORKS[name] || name === activeNetwork) {
     closeNetworkMenu();
+    return;
+  }
+  if (NETWORKS[name].maintenance) {
+    closeNetworkMenu();
+    toast(NETWORKS[name].maintenance, 'warn', 5000);
     return;
   }
 

@@ -44,7 +44,8 @@ use crate::game;
 
 /// The launcher's list of the installed client's files, in the client folder.
 /// Reserved: an archive entry of this name is never extracted over it.
-pub const FILES_MANIFEST: &str = ".radium-files";
+/// Was `.radium-files`; see `download::adopt_legacy_names`.
+pub const FILES_MANIFEST: &str = ".receos-files";
 
 const MANIFEST_VERSION: u32 = 1;
 
@@ -194,6 +195,7 @@ pub fn write_files_manifest(dir: &Path, files: &[FileRecord]) -> std::io::Result
 /// a list that can't be read). Entries that could reach outside the folder
 /// are dropped.
 pub fn read_files_manifest(dir: &Path) -> Option<Vec<FileRecord>> {
+    download::adopt_legacy_names(dir);
     let text = fs::read_to_string(dir.join(FILES_MANIFEST)).ok()?;
     let manifest: Manifest = serde_json::from_str(&text).ok()?;
     if manifest.version != MANIFEST_VERSION {
@@ -1124,7 +1126,11 @@ static LAST_CHECK: Mutex<Option<LastCheck>> = Mutex::new(None);
 /// Whether `client_dir` holds an install this launcher made and listed: one
 /// that can be checked, and repaired, even with its executable gone.
 pub fn has_files_manifest(client_dir: &str) -> bool {
-    !client_dir.is_empty() && Path::new(client_dir).join(FILES_MANIFEST).is_file()
+    if client_dir.is_empty() {
+        return false;
+    }
+    download::adopt_legacy_names(Path::new(client_dir));
+    Path::new(client_dir).join(FILES_MANIFEST).is_file()
 }
 
 /// The folder of `network`'s installed client, or why there is none to check.

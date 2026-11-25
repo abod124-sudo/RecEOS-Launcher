@@ -29,7 +29,7 @@ chmod 600 "$HOME/.vnc/passwd"
 # Reuse only the pinned archive extraction made by the validation suite. The
 # optional host seed is mounted read-only; prefixes and game writes stay here.
 client="$HOME/.local/share/com.receos.launcher/client-receos"
-if [ -f /opt/receos-seed/.radium-files ] && [ ! -e "$client" ]; then
+if { [ -f /opt/receos-seed/.receos-files ] || [ -f /opt/receos-seed/.radium-files ]; } && [ ! -e "$client" ]; then
   mkdir -p "$client.seed"
   cp -R /opt/receos-seed/. "$client.seed/"
   mv --no-clobber -T "$client.seed" "$client"

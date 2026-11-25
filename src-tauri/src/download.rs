@@ -2519,7 +2519,7 @@ pub fn is_overly_broad_dir(dir: &str) -> bool {
 /// because the real Rec Room sits in `steamapps\common` underneath. With this
 /// file an install removes exactly what it added. The old guesswork is kept,
 /// narrowed, only for installs made before the file existed.
-const INSTALL_MANIFEST: &str = ".radium-install";
+const INSTALL_MANIFEST: &str = ".receos-install";
 
 /// Present in the client folder while an extraction is writing it.
 ///
@@ -2528,21 +2528,54 @@ const INSTALL_MANIFEST: &str = ".radium-install";
 /// the folder holds half of the new one, and the config still names the old
 /// exe — often at the very path the new one is half written to. Without this
 /// the next start found that exe and reported a broken client as installed.
-const INCOMPLETE_MARKER: &str = ".radium-install-incomplete";
+const INCOMPLETE_MARKER: &str = ".receos-install-incomplete";
 
-/// Whether `name` is one of the launcher's own files in the client folder.
-/// Case-blind, as Windows paths are: an archive entry spelled
-/// `.RADIUM-INSTALL` would land on the same file.
+/// What the launcher's own files were called before it became Rec EOS
+/// Launcher, beside what they are called now: (old, new).
+fn legacy_names() -> [(&'static str, &'static str); 3] {
+    [
+        (".radium-install", INSTALL_MANIFEST),
+        (".radium-install-incomplete", INCOMPLETE_MARKER),
+        (".radium-files", crate::verify::FILES_MANIFEST),
+    ]
+}
+
+/// Give an install made under the old names the new ones. Done wherever the
+/// files are read, so every existing install picks it up on its own the first
+/// time the launcher looks at it. Where both names exist the new file wins and
+/// the old one is removed.
+pub(crate) fn adopt_legacy_names(dir: &Path) {
+    for (old, new) in legacy_names() {
+        let old_path = dir.join(old);
+        if !old_path.is_file() {
+            continue;
+        }
+        let new_path = dir.join(new);
+        if new_path.exists() {
+            let _ = fs::remove_file(&old_path);
+        } else {
+            let _ = fs::rename(&old_path, &new_path);
+        }
+    }
+}
+
+/// Whether `name` is one of the launcher's own files in the client folder,
+/// under its current name or its old one. Case-blind, as Windows paths are:
+/// an archive entry spelled `.RECEOS-INSTALL` would land on the same file.
 pub(crate) fn is_reserved_name(name: &str) -> bool {
-    name.eq_ignore_ascii_case(INSTALL_MANIFEST)
-        || name.eq_ignore_ascii_case(INCOMPLETE_MARKER)
-        || name.eq_ignore_ascii_case(crate::verify::FILES_MANIFEST)
+    legacy_names()
+        .iter()
+        .any(|(old, new)| name.eq_ignore_ascii_case(old) || name.eq_ignore_ascii_case(new))
 }
 
 /// Whether an extraction into `client_dir` started and never finished. See
 /// [`INCOMPLETE_MARKER`].
 pub fn install_incomplete(client_dir: &str) -> bool {
-    !client_dir.is_empty() && Path::new(client_dir).join(INCOMPLETE_MARKER).exists()
+    if client_dir.is_empty() {
+        return false;
+    }
+    adopt_legacy_names(Path::new(client_dir));
+    Path::new(client_dir).join(INCOMPLETE_MARKER).exists()
 }
 
 /// The first component of an archive path, if it is a plain name.
@@ -2626,6 +2659,7 @@ pub(crate) fn add_install_entries(dir: &Path, names: &[String]) {
 /// The recorded entries, or `None` for an install made before the manifest
 /// existed (or one whose manifest can't be read).
 fn read_install_manifest(dir: &Path) -> Option<Vec<String>> {
+    adopt_legacy_names(dir);
     let text = fs::read_to_string(dir.join(INSTALL_MANIFEST)).ok()?;
     Some(
         text.lines()
@@ -2757,6 +2791,7 @@ fn safe_clear_client_dir(client_dir: &str) -> std::io::Result<bool> {
         let _ = fs::remove_dir_all(&sub);
     }
     let _ = fs::remove_file(path.join(INCOMPLETE_MARKER));
+    let _ = fs::remove_file(path.join(".radium-install-incomplete"));
 
     Ok(true)
 }
@@ -3175,6 +3210,30 @@ mod extraction_tests {
         assert!(!client.join(INSTALL_MANIFEST).exists());
         assert!(!install_incomplete(&client.to_string_lossy()), "and so does its marker");
         assert!(client.join("notes.txt").exists(), "what was already there stays");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// An install made under the old `.radium-*` names is read as before, and
+    /// its files take the new names; where a new one already exists it wins.
+    #[test]
+    fn old_install_files_take_the_new_names() {
+        let root = temp_dir("legacy-names");
+        let client = root.join("client");
+        fs::create_dir_all(&client).expect("dir");
+        fs::write(client.join(".radium-install"), "Recroom_Release.exe\n").expect("old record");
+        fs::write(client.join(".radium-install-incomplete"), b"").expect("old marker");
+        fs::write(client.join(".radium-files"), b"old").expect("old list");
+        fs::write(client.join(crate::verify::FILES_MANIFEST), b"new").expect("new list");
+
+        assert_eq!(read_install_manifest(&client), Some(vec!["Recroom_Release.exe".to_string()]));
+        assert!(install_incomplete(&client.to_string_lossy()));
+        for old in [".radium-install", ".radium-install-incomplete", ".radium-files"] {
+            assert!(!client.join(old).exists(), "{old} is gone");
+        }
+        assert!(client.join(INSTALL_MANIFEST).is_file());
+        assert!(client.join(INCOMPLETE_MARKER).is_file());
+        assert_eq!(fs::read(client.join(crate::verify::FILES_MANIFEST)).unwrap(), b"new");
 
         let _ = fs::remove_dir_all(&root);
     }

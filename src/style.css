@@ -589,6 +589,11 @@ a:hover, .text-link:hover {
   font-family: var(--font-mono); font-size: 14px; font-weight: bold;
   color: inherit;
 }
+/* A network that is down for maintenance (NETWORKS.*.maintenance): greyed
+   out, with the note under its name. The note is hidden on the others. */
+.network-option-note { display: none; font-size: 10px; letter-spacing: 0.5px; opacity: 0.8; color: inherit; }
+.network-menu .network-option.is-maintenance { opacity: 0.5; cursor: not-allowed; }
+.network-menu .network-option.is-maintenance .network-option-note { display: block; }
 .network-option-check {
   margin-left: auto; font-size: 14px; color: inherit;
   visibility: hidden;
