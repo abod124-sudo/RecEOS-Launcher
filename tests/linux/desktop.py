@@ -325,8 +325,9 @@ def main():
         driver.async_js("window.__validationPanel=[];await window.__TAURI__.event.listen('tray-panel',e=>window.__validationPanel.push(e.payload));return true;")
         menu_action(bus, watcher, "Rec EOS Launcher…")
         wait(lambda: driver.js("return window.__validationPanel.includes(true)"), "tray panel opens")
-        driver.invoke("tray_menu_pick", {"id": "network:radium"})
-        wait(lambda: driver.js("return document.body.classList.contains('network-radium')"), "tray panel network pick")
+        # Vanilla, as Radium is down for maintenance and refuses the switch.
+        driver.invoke("tray_menu_pick", {"id": "network:vanilla"})
+        wait(lambda: driver.js("return document.body.classList.contains('network-vanilla')"), "tray panel network pick")
         driver.invoke("tray_menu_pick", {"id": "network:receos"})
         wait(lambda: driver.js("return document.body.classList.contains('network-receos')"), "tray panel return pick")
         driver.invoke("tray_menu_hide")
